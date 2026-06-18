@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+dist/
+src/web/dist/
+data/*.sqlite
+data/*.sqlite-*
+data/*.sqlite.bak-*
+data/backups/
+.omx/
+package-lock 2.json
+.env
+.env.*
+示范文件/
+docs/brand/
+docs/plans/
+src/web/public/icons/
