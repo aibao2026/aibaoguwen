@@ -3,6 +3,8 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import Fastify from "fastify";
+import { publicAiSettings, resolveSavedApiKey, writeLocalAiSettings } from "../ai/localAiSettings";
+import type { AiProviderId } from "../ai/modelProviders";
 import { openDatabase } from "../db/connection";
 import { runMigrations } from "../db/migrations";
 import { CustomerRepository } from "../db/repositories/customerRepository";
@@ -16,7 +18,13 @@ import {
   getPolicyRenewalSchedule,
 } from "../domain/reminders/policyRenewalReminder";
 import type { KeyFieldChange, PendingConfirmation, Reminder } from "../domain/types";
+import {
+  analyzeImportFiles,
+  prepareGenericImportWorkbooks,
+  type ImportFieldMappingInput,
+} from "../importers/genericImport";
 import { importWorkbooks } from "../importers/importService";
+import { supportedImportFileExtension } from "../importers/tableReader";
 import { prepareFeishuBaseSchema } from "../sync/feishuBaseSchema";
 import { syncFeishuBaseBatch } from "../sync/feishuBaseBatchSync";
 import { syncFeishuBase } from "../sync/feishuBaseSync";
@@ -40,6 +48,21 @@ interface ImportRequestBody {
   policyWorkbookPath?: string;
   customerWorkbookFile?: UploadedWorkbook;
   policyWorkbookFile?: UploadedWorkbook;
+  files?: UploadedWorkbook[];
+  mappings?: ImportFieldMappingInput[];
+  ai?: AiImportRequestBody;
+}
+
+interface AiImportRequestBody {
+  enabled?: boolean;
+  providerId?: AiProviderId;
+  apiKey?: string;
+  useSavedKey?: boolean;
+}
+
+interface AiSettingsRequestBody {
+  providerId?: AiProviderId;
+  apiKey?: string;
 }
 
 interface DataBackupRequestBody {
@@ -48,6 +71,10 @@ interface DataBackupRequestBody {
 
 interface DataRestoreRequestBody {
   fileName?: string;
+}
+
+interface ClearLocalDataRequestBody {
+  confirm?: string;
 }
 
 interface FeishuBaseSyncRequestBody {
@@ -238,6 +265,15 @@ function persistUploadedWorkbook(upload: UploadedWorkbook, dir: string): string 
   return filePath;
 }
 
+function persistUploadedImportFile(upload: UploadedWorkbook, dir: string): string {
+  if (!supportedImportFileExtension(upload.fileName)) {
+    throw new Error("unsupported_import_file_type");
+  }
+  const filePath = join(dir, `${Date.now()}-${basename(upload.fileName)}`);
+  writeFileSync(filePath, Buffer.from(upload.base64, "base64"));
+  return filePath;
+}
+
 function safeBackupLabel(label?: string): string {
   return (label?.trim() || "manual")
     .replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]+/g, "-")
@@ -254,6 +290,28 @@ function timestampLabel(): string {
 
 function backupFilePath(dbPath: string, label?: string): string {
   return join(backupDir(dbPath), `customer-reminders-${timestampLabel()}-${safeBackupLabel(label)}.sqlite`);
+}
+
+function createDatabaseBackup(dbPath: string, label?: string) {
+  const targetDir = backupDir(dbPath);
+  mkdirSync(targetDir, { recursive: true });
+  const filePath = backupFilePath(dbPath, label);
+  if (existsSync(dbPath)) {
+    copyFileSync(dbPath, filePath);
+  } else {
+    const db = openDatabase(dbPath);
+    runMigrations(db);
+    db.close();
+    copyFileSync(dbPath, filePath);
+  }
+  const stats = statSync(filePath);
+  return {
+    fileName: basename(filePath),
+    filePath,
+    sizeBytes: stats.size,
+    createdAt: stats.birthtime.toISOString(),
+    modifiedAt: stats.mtime.toISOString(),
+  };
 }
 
 function listBackupFiles(dbPath: string) {
@@ -289,6 +347,10 @@ function resolveBackupPath(dbPath: string, fileName: string): string | undefined
 function cleanOptional(value?: string): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function isAiProviderId(value: unknown): value is AiProviderId {
+  return typeof value === "string" && ["deepseek", "qwen", "glm", "moonshot", "openai"].includes(value);
 }
 
 function isDateOnly(value: string): boolean {
@@ -599,8 +661,25 @@ function withRepositories<T>(
   }
 }
 
+function clearLocalData(dbPath: string) {
+  const db = openDatabase(dbPath);
+  runMigrations(db);
+  try {
+    db.transaction(() => {
+      db.prepare("DELETE FROM sync_state").run();
+      db.prepare("DELETE FROM pending_confirmations").run();
+      db.prepare("DELETE FROM reminders").run();
+      db.prepare("DELETE FROM policies").run();
+      db.prepare("DELETE FROM customers").run();
+    })();
+  } finally {
+    db.close();
+  }
+}
+
 export function buildServer(options: ServerOptions = {}) {
   const dbPath = options.dbPath ?? "data/customer-reminders.sqlite";
+  const dataRoot = dirname(dbPath);
   const today = options.today ?? todayIso();
   const auth = createAuthConfig(options.accessPassword ?? process.env.CUSTOMER_REMINDERS_PASSWORD);
   const app = Fastify({
@@ -657,15 +736,82 @@ export function buildServer(options: ServerOptions = {}) {
     return { ok: true };
   });
 
+  app.get("/api/ai/settings", async () => publicAiSettings(dataRoot));
+
+  app.post<{ Body: AiSettingsRequestBody }>("/api/ai/settings", async (request, reply) => {
+    if (!isAiProviderId(request.body.providerId)) {
+      reply.code(400);
+      return { error: "unsupported_ai_provider" };
+    }
+    writeLocalAiSettings(dataRoot, {
+      providerId: request.body.providerId,
+      apiKey: request.body.apiKey,
+    });
+    return publicAiSettings(dataRoot);
+  });
+
+  app.post<{ Body: ImportRequestBody }>("/api/imports/analyze", async (request, reply) => {
+    const uploadDir = mkdtempSync(join(tmpdir(), "customer-reminders-upload-"));
+    try {
+      const uploads = request.body.files ?? [];
+      const files = uploads.map((upload) => ({
+        fileName: upload.fileName,
+        filePath: persistUploadedImportFile(upload, uploadDir),
+      }));
+      const providerId = request.body.ai?.providerId;
+      const apiKey =
+        request.body.ai?.apiKey?.trim() ||
+        (providerId && request.body.ai?.useSavedKey ? resolveSavedApiKey(dataRoot, providerId) : undefined);
+      return await analyzeImportFiles({
+        files,
+        dataRoot,
+        ai:
+          request.body.ai?.enabled && providerId && apiKey
+            ? { enabled: true, providerId, apiKey }
+            : { enabled: false },
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "unsupported_import_file_type") {
+        reply.code(400);
+        return { error: error.message };
+      }
+      throw error;
+    } finally {
+      rmSync(uploadDir, { recursive: true, force: true });
+    }
+  });
+
   app.post<{ Body: ImportRequestBody }>("/api/imports", async (request, reply) => {
     const uploadDir = mkdtempSync(join(tmpdir(), "customer-reminders-upload-"));
     try {
-      const customerWorkbookPath = request.body.customerWorkbookFile
+      let customerWorkbookPath = request.body.customerWorkbookFile
         ? persistUploadedWorkbook(request.body.customerWorkbookFile, uploadDir)
         : request.body.customerWorkbookPath;
-      const policyWorkbookPath = request.body.policyWorkbookFile
+      let policyWorkbookPath = request.body.policyWorkbookFile
         ? persistUploadedWorkbook(request.body.policyWorkbookFile, uploadDir)
         : request.body.policyWorkbookPath;
+
+      if (request.body.files?.length) {
+        const providerId = request.body.ai?.providerId;
+        const apiKey =
+          request.body.ai?.apiKey?.trim() ||
+          (providerId && request.body.ai?.useSavedKey ? resolveSavedApiKey(dataRoot, providerId) : undefined);
+        const prepared = await prepareGenericImportWorkbooks({
+          files: request.body.files.map((upload) => ({
+            fileName: upload.fileName,
+            filePath: persistUploadedImportFile(upload, uploadDir),
+          })),
+          uploadDir,
+          dataRoot,
+          mappings: request.body.mappings,
+          ai:
+            request.body.ai?.enabled && providerId && apiKey
+              ? { enabled: true, providerId, apiKey }
+              : { enabled: false },
+        });
+        customerWorkbookPath = prepared.customerWorkbookPath;
+        policyWorkbookPath = prepared.policyWorkbookPath;
+      }
 
       return await importWorkbooks({
         customerWorkbookPath,
@@ -675,6 +821,10 @@ export function buildServer(options: ServerOptions = {}) {
       });
     } catch (error) {
       if (error instanceof Error && error.message === "unsupported_workbook_file_type") {
+        reply.code(400);
+        return { error: error.message };
+      }
+      if (error instanceof Error && error.message === "unsupported_import_file_type") {
         reply.code(400);
         return { error: error.message };
       }
@@ -689,12 +839,33 @@ export function buildServer(options: ServerOptions = {}) {
     const previewDir = mkdtempSync(join(tmpdir(), "customer-reminders-preview-"));
     const previewDbPath = join(previewDir, "preview.sqlite");
     try {
-      const customerWorkbookPath = request.body.customerWorkbookFile
+      let customerWorkbookPath = request.body.customerWorkbookFile
         ? persistUploadedWorkbook(request.body.customerWorkbookFile, uploadDir)
         : request.body.customerWorkbookPath;
-      const policyWorkbookPath = request.body.policyWorkbookFile
+      let policyWorkbookPath = request.body.policyWorkbookFile
         ? persistUploadedWorkbook(request.body.policyWorkbookFile, uploadDir)
         : request.body.policyWorkbookPath;
+      if (request.body.files?.length) {
+        const providerId = request.body.ai?.providerId;
+        const apiKey =
+          request.body.ai?.apiKey?.trim() ||
+          (providerId && request.body.ai?.useSavedKey ? resolveSavedApiKey(dataRoot, providerId) : undefined);
+        const prepared = await prepareGenericImportWorkbooks({
+          files: request.body.files.map((upload) => ({
+            fileName: upload.fileName,
+            filePath: persistUploadedImportFile(upload, uploadDir),
+          })),
+          uploadDir,
+          dataRoot,
+          mappings: request.body.mappings,
+          ai:
+            request.body.ai?.enabled && providerId && apiKey
+              ? { enabled: true, providerId, apiKey }
+              : { enabled: false },
+        });
+        customerWorkbookPath = prepared.customerWorkbookPath;
+        policyWorkbookPath = prepared.policyWorkbookPath;
+      }
       if (existsSync(dbPath)) {
         copyFileSync(dbPath, previewDbPath);
       }
@@ -721,6 +892,10 @@ export function buildServer(options: ServerOptions = {}) {
       };
     } catch (error) {
       if (error instanceof Error && error.message === "unsupported_workbook_file_type") {
+        reply.code(400);
+        return { error: error.message };
+      }
+      if (error instanceof Error && error.message === "unsupported_import_file_type") {
         reply.code(400);
         return { error: error.message };
       }
@@ -753,27 +928,9 @@ export function buildServer(options: ServerOptions = {}) {
   }));
 
   app.post<{ Body: DataBackupRequestBody }>("/api/backups", async (request) => {
-    const targetDir = backupDir(dbPath);
-    mkdirSync(targetDir, { recursive: true });
-    const filePath = backupFilePath(dbPath, request.body?.label);
-    if (existsSync(dbPath)) {
-      copyFileSync(dbPath, filePath);
-    } else {
-      const db = openDatabase(dbPath);
-      runMigrations(db);
-      db.close();
-      copyFileSync(dbPath, filePath);
-    }
-    const stats = statSync(filePath);
     return {
       ok: true,
-      backup: {
-        fileName: basename(filePath),
-        filePath,
-        sizeBytes: stats.size,
-        createdAt: stats.birthtime.toISOString(),
-        modifiedAt: stats.mtime.toISOString(),
-      },
+      backup: createDatabaseBackup(dbPath, request.body?.label),
     };
   });
 
@@ -793,6 +950,20 @@ export function buildServer(options: ServerOptions = {}) {
     return {
       ok: true,
       restored: basename(sourcePath),
+      stats: withRepositories(dbPath, (repos) => buildLocalDataStats(repos)),
+    };
+  });
+
+  app.post<{ Body: ClearLocalDataRequestBody }>("/api/local-data/clear", async (request, reply) => {
+    if (request.body?.confirm !== "清空数据") {
+      reply.code(400);
+      return { error: "clear_confirmation_required" };
+    }
+    const backup = createDatabaseBackup(dbPath, "before-clear");
+    clearLocalData(dbPath);
+    return {
+      ok: true,
+      backup,
       stats: withRepositories(dbPath, (repos) => buildLocalDataStats(repos)),
     };
   });

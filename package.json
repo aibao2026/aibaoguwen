@@ -10,6 +10,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "api": "RUN_API_SERVER=1 tsx src/api/server.ts",
+    "export:open-source": "node scripts/export-open-source.mjs",
     "test": "node node_modules/vitest/vitest.mjs run",
     "test:watch": "node node_modules/vitest/vitest.mjs",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit"

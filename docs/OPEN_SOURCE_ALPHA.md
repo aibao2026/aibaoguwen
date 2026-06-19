@@ -39,7 +39,7 @@ src/web/public/icons/
 
 其中 `data/customer-reminders.sqlite` 和 `data/backups/` 可能包含客户姓名、手机号、证件号、保单信息和提醒状态。
 
-公开发布前请确认所有图片资源都是可公开资产，不包含私人二维码、内部品牌素材或客户截图。
+公开发布前请确认所有图片资源都是可公开资产，不包含私人二维码、内部品牌素材或客户截图。`src/web/public/support/community-qr.png` 是公开宣传和社群入口二维码，不含客户数据，可以随开源版本保留。
 
 ## 最小发布检查
 
