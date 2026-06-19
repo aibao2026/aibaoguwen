@@ -6,11 +6,13 @@ import interactionPlugin from "@fullcalendar/interaction";
 import listPlugin from "@fullcalendar/list";
 import type { DatesSetArg, EventClickArg, EventContentArg, EventInput } from "@fullcalendar/core";
 import {
+  analyzeImport,
   completeReminder,
   completeRemindersByDate,
   createBackup,
   createTodo,
   deleteReminder,
+  getAiSettings,
   getReminderDetail,
   getAuthStatus,
   getLocalDataStats,
@@ -25,8 +27,11 @@ import {
   reopenReminder,
   restoreBackup,
   resolvePendingConfirmation,
+  saveAiSettings,
   syncFeishuBase,
   syncFeishuCalendar,
+  type AiProviderId,
+  type AiSettings,
   type DataBackupItem,
   type FeishuBaseCalendarViewResult,
   type FeishuBaseSchemaResult,
@@ -36,6 +41,7 @@ import {
   type KeyFieldChangeItem,
   type LocalDataStats,
   type PendingCorrectionInput,
+  type ImportAnalysisResult,
   type ReminderDetail,
   type PendingItem,
   type ReminderItem,
@@ -1305,20 +1311,36 @@ function ImportView({
   onOpenPending: () => void;
   onRestored: () => Promise<void>;
 }) {
-  const [customerFile, setCustomerFile] = useState<File | null>(null);
-  const [policyFile, setPolicyFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [analysis, setAnalysis] = useState<ImportAnalysisResult | null>(null);
+  const [aiSettings, setAiSettings] = useState<AiSettings | null>(null);
+  const [aiProvider, setAiProvider] = useState<AiProviderId>("deepseek");
+  const [aiKey, setAiKey] = useState("");
+  const [useAi, setUseAi] = useState(false);
   const [lastSummary, setLastSummary] = useState<Awaited<ReturnType<typeof importWorkbooks>> | null>(null);
   const [backups, setBackups] = useState<DataBackupItem[]>([]);
   const [selectedBackup, setSelectedBackup] = useState("");
   const [loading, setLoading] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [backupLoading, setBackupLoading] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
-  const hasImportSource = Boolean(customerFile || policyFile);
+  const hasImportSource = files.length > 0;
+  const hasImportableTables = Boolean(
+    analysis && analysis.summary.customerTables + analysis.summary.policyTables > 0,
+  );
 
   async function buildImportInput() {
+    const providerId = aiProvider;
     return {
-      customerWorkbookFile: customerFile ? await fileToUpload(customerFile) : undefined,
-      policyWorkbookFile: policyFile ? await fileToUpload(policyFile) : undefined,
+      files: await Promise.all(files.map(fileToUpload)),
+      ai: useAi
+        ? {
+            enabled: true,
+            providerId,
+            apiKey: aiKey.trim() || undefined,
+            useSavedKey: true,
+          }
+        : { enabled: false },
     };
   }
 
@@ -1348,36 +1370,105 @@ function ImportView({
 
   useEffect(() => {
     refreshBackups().catch((error: unknown) => setBackupMessage(String(error)));
+    getAiSettings()
+      .then((settings) => {
+        setAiSettings(settings);
+        setAiProvider(settings.providerId);
+      })
+      .catch((error: unknown) => setBackupMessage(String(error)));
   }, []);
+
+  async function analyzeSelectedFiles() {
+    setAnalyzing(true);
+    setAnalysis(null);
+    setLastSummary(null);
+    try {
+      if (useAi && aiKey.trim()) {
+        const settings = await saveAiSettings({ providerId: aiProvider, apiKey: aiKey.trim() });
+        setAiSettings(settings);
+        setAiKey("");
+      }
+      const result = await analyzeImport(await buildImportInput());
+      setAnalysis(result);
+      if (result.summary.unknownTables > 0) {
+        setBackupMessage("有表格暂未识别，可以填写 API Key 后再分析一次。");
+      } else if (result.summary.familyTables > 0) {
+        setBackupMessage("家庭保障字段已记录，本次只导入客户和保单提醒。");
+      } else {
+        setBackupMessage("字段已识别，可以确认导入。");
+      }
+    } finally {
+      setAnalyzing(false);
+    }
+  }
 
   return (
     <>
       <h2>导入</h2>
-      <p className="section-note">选择客户生日表和保单续期表，系统会自动生成生日提醒、续期提醒和待确认事项。</p>
-      <div className="import-grid">
+      <p className="section-note">上传客户、保单或家庭保障表，先识别字段，再确认导入。</p>
+      <div className="import-grid import-grid-single">
         <label className="file-picker">
-          客户生日表
+          上传文件
           <input
             type="file"
-            accept=".xlsx,.xls"
-            onChange={(event) => setCustomerFile(event.target.files?.[0] ?? null)}
+            accept=".xlsx,.xls,.csv"
+            multiple
+            onChange={(event) => {
+              setFiles(Array.from(event.target.files ?? []));
+              setAnalysis(null);
+              setLastSummary(null);
+            }}
           />
-          <span>{customerFile ? customerFile.name : "选择客户生日 Excel"}</span>
-        </label>
-        <label className="file-picker">
-          保单续期表
-          <input
-            type="file"
-            accept=".xlsx,.xls"
-            onChange={(event) => setPolicyFile(event.target.files?.[0] ?? null)}
-          />
-          <span>{policyFile ? policyFile.name : "选择保单续期 Excel"}</span>
+          <span>{files.length > 0 ? files.map((file) => file.name).join("、") : "选择 Excel 或 CSV"}</span>
         </label>
       </div>
+      <section className="ai-import-options" aria-label="大模型字段识别">
+        <label className="inline-check">
+          <input
+            type="checkbox"
+            checked={useAi}
+            onChange={(event) => setUseAi(event.target.checked)}
+          />
+          <span>表头不标准时，用大模型识别字段</span>
+        </label>
+        {useAi && (
+          <div className="ai-import-grid">
+            <label>
+              模型
+              <select
+                value={aiProvider}
+                onChange={(event) => setAiProvider(event.target.value as AiProviderId)}
+              >
+                {(aiSettings?.providers ?? []).map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              API Key
+              <input
+                type="password"
+                value={aiKey}
+                placeholder={aiSettings?.apiKeyConfigured ? "已保存，可留空" : "粘贴后会保存在本机"}
+                onChange={(event) => setAiKey(event.target.value)}
+              />
+            </label>
+          </div>
+        )}
+      </section>
       <div className="import-actions">
         <button
           className="primary"
-          disabled={loading || !hasImportSource}
+          disabled={analyzing || !hasImportSource}
+          onClick={analyzeSelectedFiles}
+        >
+          {analyzing ? "分析中" : "分析文件"}
+        </button>
+        <button
+          className="ghost"
+          disabled={loading || !hasImportSource || !hasImportableTables}
           onClick={async () => {
             setLoading(true);
             setLastSummary(null);
@@ -1393,9 +1484,10 @@ function ImportView({
             }
           }}
         >
-          {loading ? "导入中" : "开始导入"}
+          {loading ? "导入中" : "确认导入"}
         </button>
       </div>
+      {analysis && <ImportAnalysisSummary analysis={analysis} />}
       {lastSummary && (
         <section className="import-result">
           <div>
@@ -1488,6 +1580,45 @@ function ImportView({
         {backupMessage && <p className="backup-message">{backupMessage}</p>}
       </section>
     </>
+  );
+}
+
+function importKindLabel(kind: ImportAnalysisResult["files"][number]["tables"][number]["tableKind"]) {
+  if (kind === "customer") return "客户";
+  if (kind === "policy") return "保单";
+  if (kind === "family") return "家庭保障";
+  return "待确认";
+}
+
+function ImportAnalysisSummary({ analysis }: { analysis: ImportAnalysisResult }) {
+  const tables = analysis.files.flatMap((file) => file.tables);
+  return (
+    <section className="analysis-panel">
+      <div className="analysis-head">
+        <strong>
+          识别到客户 {analysis.summary.customerTables} 张，保单 {analysis.summary.policyTables} 张，家庭保障 {analysis.summary.familyTables} 张
+        </strong>
+        <span>{analysis.summary.aiUsed ? "已用大模型辅助" : "本地规则识别"}</span>
+      </div>
+      <div className="analysis-list">
+        {tables.slice(0, 8).map((table) => (
+          <div key={`${table.fileName}-${table.sheetName}`} className={table.tableKind === "unknown" ? "needs-review" : ""}>
+            <span>{importKindLabel(table.tableKind)}</span>
+            <strong>{table.sheetName}</strong>
+            <p>
+              {table.rowCount} 行，匹配 {table.mappings.length} 个字段
+              {table.missingImportFields.length > 0
+                ? `，缺 ${table.missingImportFields.join("、")}`
+                : ""}
+            </p>
+          </div>
+        ))}
+      </div>
+      {tables.length > 8 && <p className="analysis-note">其余 {tables.length - 8} 张表已记录。</p>}
+      {analysis.summary.familyTables > 0 && (
+        <p className="analysis-note">家庭保障字段会先记录下来，后续用于客户等级和家庭保障视图。</p>
+      )}
+    </section>
   );
 }
 

@@ -5,6 +5,7 @@ src/web/dist/
 data/*.sqlite
 data/*.sqlite-*
 data/*.sqlite.bak-*
+data/*.json
 data/backups/
 .omx/
 package-lock 2.json

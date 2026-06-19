@@ -14,7 +14,9 @@ data/customer-reminders.sqlite
 
 - SQLite 文件当前未加密。
 - 访问密码只保护网页入口，不加密数据库文件。
-- Excel 解析依赖 `xlsx`。npm audit 当前报告该依赖存在 high severity 漏洞且暂无官方修复版本。alpha 阶段只建议导入用户自己可信来源的本地 Excel，不建议把本工具改造成公开上传服务。
+- Excel/CSV 解析依赖 `xlsx`。npm audit 当前报告该依赖存在 high severity 漏洞且暂无官方修复版本。alpha 阶段只建议导入用户自己可信来源的本地文件，不建议把本工具改造成公开上传服务。
+- 大模型 API Key 保存在本机 `data/ai-settings.json`，该文件不应提交、打包或外发。
+- 大模型字段识别默认只发送表头和少量脱敏样例，不应发送完整身份证、手机号、银行账号或全量客户数据。
 - 飞书同步依赖本机 `lark-cli` 授权。不要在日志、截图或聊天回复里展示完整 Base 标识、session cookie 或 token。
 
 ## 默认隐私规则
@@ -22,6 +24,7 @@ data/customer-reminders.sqlite
 - 网页详情默认脱敏展示手机号和证件号。
 - 飞书同步默认脱敏手机号和证件号。
 - 客户外部 ID 使用 hash，不包含姓名或证件号。
+- 大模型只做字段映射建议，不直接写客户、保单或提醒。
 - AI agent 只能在用户明确任务范围内读取和操作数据。
 
 ## 报告问题

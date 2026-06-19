@@ -23,11 +23,14 @@ AI保顾问是一个本地运行的保险客户工作日历。它把客户生日
 
 ### 导入与待确认
 
-- 支持导入客户生日表和保单续期表。
+- 支持一个入口上传客户表、保单表、CSV 或家庭保障分析表。
+- 支持本地规则识别字段；表头不标准时，可以选择大模型辅助识别字段。
+- 大模型 API Key 保存在本机 `data/ai-settings.json`，不提交到仓库。
 - 支持正式导入前预检，预检不写入正式数据库。
 - 正式导入前会自动创建本地备份。
 - 关键字段缺失、生日缺失、生效日缺失、缴费期间无法解析或关键字段变化，会进入待确认。
 - 待确认处理后，可以重新生成更可信的提醒。
+- 家庭保障分析表会先记录字段维度，后续用于客户等级和家庭保障视图；当前不会直接生成提醒。
 
 ### 生日、续期和手动待办
 
@@ -122,7 +125,7 @@ CUSTOMER_REMINDERS_PASSWORD="你的密码" npm run start
 
 本仓库不附带真实客户 Excel 或真实数据库。导入测试请使用自己准备的表格，或参考 `docs/sample-data.md` 里的字段说明制作合成数据。
 
-当前 Excel 解析依赖 `xlsx`。npm audit 对该依赖有已知高危提示且暂无官方修复版本；当前版本只建议导入自己可信来源的本地 Excel，不建议把本工具改造成公开上传服务。更多说明见 `SECURITY.md`。
+当前 Excel/CSV 解析依赖 `xlsx`。npm audit 对该依赖有已知高危提示且暂无官方修复版本；当前版本只建议导入自己可信来源的本地文件，不建议把本工具改造成公开上传服务。更多说明见 `SECURITY.md`。
 
 ## 技术结构
 
@@ -131,7 +134,7 @@ src/
   api/        本地 HTTP API
   db/         SQLite 连接、迁移和仓储
   domain/     纯业务规则：ID、匹配、生日、续期
-  importers/  Excel 读取和归一化
+  importers/  表格读取、字段识别和归一化
   sync/       飞书多维表格和飞书日历同步
   web/        React + FullCalendar 前端
 tests/        domain、importers、db、api、sync、contracts 测试
@@ -141,7 +144,8 @@ docs/         使用说明、安全说明和测试清单
 核心边界：
 
 - `src/domain/` 不读文件、不碰数据库、不调用飞书。
-- `src/importers/` 可以理解 Excel 列名，但不直接写 UI。
+- `src/importers/` 可以理解表格列名，但不直接写 UI。
+- `src/ai/` 只做大模型提供方配置和字段识别，不直接写数据库。
 - `src/db/` 只负责持久化和迁移。
 - `src/sync/` 使用已生成的本地快照，不重新计算提醒。
 - `src/web/` 只通过 API 操作数据，不直接导入数据库或领域服务。
@@ -154,6 +158,7 @@ docs/         使用说明、安全说明和测试清单
 - `SPEC.md`：当前业务规则和成功标准。
 - `SECURITY.md`：安全边界和已知限制。
 - `docs/OPEN_SOURCE_ALPHA.md`：开源发布边界和检查清单。
+- `docs/OPEN_SOURCE_RELEASE_PROCESS.md`：私有开发区到公开发布区的白名单导出流程。
 - `docs/sample-data.md`：导入字段说明。
 
 ## 发布前检查
@@ -168,10 +173,18 @@ npm run build
 
 涉及日历、按钮、弹窗等界面改动时，还要打开 `http://127.0.0.1:4173/` 做浏览器验证，确认文字不重叠、入口不重复、完成状态真实生效。
 
+开源或分享前，不要直接推送或压缩日常开发目录。先用白名单导出公开发布区：
+
+```bash
+npm run export:open-source -- --clean
+```
+
+导出流程见 `docs/OPEN_SOURCE_RELEASE_PROCESS.md`。
+
 ## 当前未包含
 
 - SQLite 文件加密。
 - 多人账号和权限体系。
-- 通用 Excel 字段映射。
+- PDF、图片、Word 等非表格文件识别。
 - 面向普通用户的飞书网页一键授权。
 - Playwright E2E 和 ESLint 配置。

@@ -236,6 +236,62 @@ export interface WorkbookUpload {
   base64: string;
 }
 
+export type AiProviderId = "deepseek" | "qwen" | "glm" | "moonshot" | "openai";
+
+export interface AiSettings {
+  providerId: AiProviderId;
+  apiKeyConfigured: boolean;
+  providers: Array<{ id: AiProviderId; name: string; model: string }>;
+}
+
+export type ImportTableKind = "customer" | "policy" | "family" | "unknown";
+
+export interface ImportFieldMapping {
+  sourceField: string;
+  canonicalField: string;
+  canonicalLabel: string;
+  confidence: number;
+  source: "rule" | "ai";
+}
+
+export interface ImportAnalysisResult {
+  files: Array<{
+    fileName: string;
+    tables: Array<{
+      fileName: string;
+      sheetName: string;
+      tableKind: ImportTableKind;
+      confidence: number;
+      rowCount: number;
+      headers: string[];
+      mappings: ImportFieldMapping[];
+      missingImportFields: string[];
+    }>;
+  }>;
+  summary: {
+    customerTables: number;
+    policyTables: number;
+    familyTables: number;
+    unknownTables: number;
+    mappedFields: number;
+    aiUsed: boolean;
+  };
+}
+
+export interface ImportFieldMappingInput {
+  fileName: string;
+  sheetName: string;
+  sourceField: string;
+  canonicalField: string;
+}
+
+export interface AiImportOptions {
+  enabled?: boolean;
+  providerId?: AiProviderId;
+  apiKey?: string;
+  useSavedKey?: boolean;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
   if (options?.body !== undefined && !headers.has("Content-Type")) {
@@ -270,11 +326,25 @@ export function logout() {
   });
 }
 
+export function getAiSettings() {
+  return request<AiSettings>("/api/ai/settings");
+}
+
+export function saveAiSettings(input: { providerId: AiProviderId; apiKey?: string }) {
+  return request<AiSettings>("/api/ai/settings", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export function importWorkbooks(input: {
   customerWorkbookPath?: string;
   policyWorkbookPath?: string;
   customerWorkbookFile?: WorkbookUpload;
   policyWorkbookFile?: WorkbookUpload;
+  files?: WorkbookUpload[];
+  mappings?: ImportFieldMappingInput[];
+  ai?: AiImportOptions;
 }) {
   return request<{
     importedCustomers: number;
@@ -294,8 +364,21 @@ export function previewImport(input: {
   policyWorkbookPath?: string;
   customerWorkbookFile?: WorkbookUpload;
   policyWorkbookFile?: WorkbookUpload;
+  files?: WorkbookUpload[];
+  mappings?: ImportFieldMappingInput[];
+  ai?: AiImportOptions;
 }) {
   return request<ImportPreviewResult>("/api/imports/preview", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function analyzeImport(input: {
+  files: WorkbookUpload[];
+  ai?: AiImportOptions;
+}) {
+  return request<ImportAnalysisResult>("/api/imports/analyze", {
     method: "POST",
     body: JSON.stringify(input),
   });

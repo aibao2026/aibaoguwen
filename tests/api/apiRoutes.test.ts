@@ -95,6 +95,33 @@ describe("api routes", () => {
     await app.close();
   });
 
+  it("saves AI settings locally without returning the API key", async () => {
+    const app = buildServer({ dbPath: tempDbPath(), today: "2026-06-17" });
+
+    const saveResponse = await app.inject({
+      method: "POST",
+      url: "/api/ai/settings",
+      payload: { providerId: "deepseek", apiKey: "sk-local-test" },
+    });
+    const getResponse = await app.inject({
+      method: "GET",
+      url: "/api/ai/settings",
+    });
+
+    expect(saveResponse.statusCode).toBe(200);
+    expect(saveResponse.json()).toMatchObject({
+      providerId: "deepseek",
+      apiKeyConfigured: true,
+    });
+    expect(JSON.stringify(saveResponse.json())).not.toContain("sk-local-test");
+    expect(getResponse.json()).toMatchObject({
+      providerId: "deepseek",
+      apiKeyConfigured: true,
+    });
+    expect(getResponse.json().providers.length).toBeGreaterThan(1);
+    await app.close();
+  });
+
   it("imports workbooks and lists pending reminders", async () => {
     const app = buildServer({ dbPath: tempDbPath(), today: "2026-06-17" });
 
@@ -165,6 +192,42 @@ describe("api routes", () => {
           base64: readFileSync("tests/fixtures/policy-performance.xlsx").toString("base64"),
         },
       },
+    });
+
+    expect(importResponse.statusCode).toBe(200);
+    expect(importResponse.json().generatedReminders).toBeGreaterThan(600);
+    await app.close();
+  }, 15000);
+
+  it("analyzes and imports multiple files through the unified import entry", async () => {
+    const app = buildServer({ dbPath: tempDbPath(), today: "2026-06-17" });
+    const files = [
+      {
+        fileName: "customer-info.xlsx",
+        base64: readFileSync("tests/fixtures/customer-info.xlsx").toString("base64"),
+      },
+      {
+        fileName: "policy-performance.xlsx",
+        base64: readFileSync("tests/fixtures/policy-performance.xlsx").toString("base64"),
+      },
+    ];
+
+    const analyzeResponse = await app.inject({
+      method: "POST",
+      url: "/api/imports/analyze",
+      payload: { files },
+    });
+    expect(analyzeResponse.statusCode).toBe(200);
+    expect(analyzeResponse.json().summary).toMatchObject({
+      customerTables: 1,
+      policyTables: 1,
+    });
+    expect(analyzeResponse.json().summary.mappedFields).toBeGreaterThan(10);
+
+    const importResponse = await app.inject({
+      method: "POST",
+      url: "/api/imports",
+      payload: { files },
     });
 
     expect(importResponse.statusCode).toBe(200);
