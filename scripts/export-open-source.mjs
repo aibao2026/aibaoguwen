@@ -41,8 +41,6 @@ const excludedPathPrefixes = [
   "docs/plans",
   "src/web/public/icons/",
   "src/web/public/icons",
-  "src/web/public/support/",
-  "src/web/public/support",
 ];
 
 const excludedNames = new Set([".DS_Store"]);

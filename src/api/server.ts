@@ -73,6 +73,10 @@ interface DataRestoreRequestBody {
   fileName?: string;
 }
 
+interface ClearLocalDataRequestBody {
+  confirm?: string;
+}
+
 interface FeishuBaseSyncRequestBody {
   baseToken?: string;
   mode?: "plan" | "execute";
@@ -286,6 +290,28 @@ function timestampLabel(): string {
 
 function backupFilePath(dbPath: string, label?: string): string {
   return join(backupDir(dbPath), `customer-reminders-${timestampLabel()}-${safeBackupLabel(label)}.sqlite`);
+}
+
+function createDatabaseBackup(dbPath: string, label?: string) {
+  const targetDir = backupDir(dbPath);
+  mkdirSync(targetDir, { recursive: true });
+  const filePath = backupFilePath(dbPath, label);
+  if (existsSync(dbPath)) {
+    copyFileSync(dbPath, filePath);
+  } else {
+    const db = openDatabase(dbPath);
+    runMigrations(db);
+    db.close();
+    copyFileSync(dbPath, filePath);
+  }
+  const stats = statSync(filePath);
+  return {
+    fileName: basename(filePath),
+    filePath,
+    sizeBytes: stats.size,
+    createdAt: stats.birthtime.toISOString(),
+    modifiedAt: stats.mtime.toISOString(),
+  };
 }
 
 function listBackupFiles(dbPath: string) {
@@ -635,6 +661,22 @@ function withRepositories<T>(
   }
 }
 
+function clearLocalData(dbPath: string) {
+  const db = openDatabase(dbPath);
+  runMigrations(db);
+  try {
+    db.transaction(() => {
+      db.prepare("DELETE FROM sync_state").run();
+      db.prepare("DELETE FROM pending_confirmations").run();
+      db.prepare("DELETE FROM reminders").run();
+      db.prepare("DELETE FROM policies").run();
+      db.prepare("DELETE FROM customers").run();
+    })();
+  } finally {
+    db.close();
+  }
+}
+
 export function buildServer(options: ServerOptions = {}) {
   const dbPath = options.dbPath ?? "data/customer-reminders.sqlite";
   const dataRoot = dirname(dbPath);
@@ -886,27 +928,9 @@ export function buildServer(options: ServerOptions = {}) {
   }));
 
   app.post<{ Body: DataBackupRequestBody }>("/api/backups", async (request) => {
-    const targetDir = backupDir(dbPath);
-    mkdirSync(targetDir, { recursive: true });
-    const filePath = backupFilePath(dbPath, request.body?.label);
-    if (existsSync(dbPath)) {
-      copyFileSync(dbPath, filePath);
-    } else {
-      const db = openDatabase(dbPath);
-      runMigrations(db);
-      db.close();
-      copyFileSync(dbPath, filePath);
-    }
-    const stats = statSync(filePath);
     return {
       ok: true,
-      backup: {
-        fileName: basename(filePath),
-        filePath,
-        sizeBytes: stats.size,
-        createdAt: stats.birthtime.toISOString(),
-        modifiedAt: stats.mtime.toISOString(),
-      },
+      backup: createDatabaseBackup(dbPath, request.body?.label),
     };
   });
 
@@ -926,6 +950,20 @@ export function buildServer(options: ServerOptions = {}) {
     return {
       ok: true,
       restored: basename(sourcePath),
+      stats: withRepositories(dbPath, (repos) => buildLocalDataStats(repos)),
+    };
+  });
+
+  app.post<{ Body: ClearLocalDataRequestBody }>("/api/local-data/clear", async (request, reply) => {
+    if (request.body?.confirm !== "清空数据") {
+      reply.code(400);
+      return { error: "clear_confirmation_required" };
+    }
+    const backup = createDatabaseBackup(dbPath, "before-clear");
+    clearLocalData(dbPath);
+    return {
+      ok: true,
+      backup,
       stats: withRepositories(dbPath, (repos) => buildLocalDataStats(repos)),
     };
   });

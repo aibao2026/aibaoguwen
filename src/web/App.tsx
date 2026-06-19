@@ -7,6 +7,7 @@ import listPlugin from "@fullcalendar/list";
 import type { DatesSetArg, EventClickArg, EventContentArg, EventInput } from "@fullcalendar/core";
 import {
   analyzeImport,
+  clearLocalData,
   completeReminder,
   completeRemindersByDate,
   createBackup,
@@ -22,22 +23,14 @@ import {
   listReminders,
   loginWithPassword,
   logout,
-  prepareFeishuBaseSchema,
-  prepareFeishuCalendarView,
   reopenReminder,
   restoreBackup,
   resolvePendingConfirmation,
   saveAiSettings,
-  syncFeishuBase,
-  syncFeishuCalendar,
   type AiProviderId,
   type AiSettings,
   type DataBackupItem,
-  type FeishuBaseCalendarViewResult,
-  type FeishuBaseSchemaResult,
-  type FeishuCalendarSyncResult,
   updateTodo,
-  type FeishuBaseSyncResult,
   type KeyFieldChangeItem,
   type LocalDataStats,
   type PendingCorrectionInput,
@@ -579,46 +572,71 @@ function MaintenanceView({
     input: { note?: string; correction?: PendingCorrectionInput },
   ) => Promise<void>;
 }) {
+  const [backupVersion, setBackupVersion] = useState(0);
+  const refreshBackups = () => setBackupVersion((version) => version + 1);
+
   return (
     <div className="maintenance-page">
-      <section className="maintenance-section">
-        <div className="maintenance-head">
-          <div>
-            <span>1</span>
-            <h3>导入数据</h3>
+      <div className="maintenance-main">
+        <section className="maintenance-section">
+          <div className="maintenance-head">
+            <div>
+              <span>1</span>
+              <div>
+                <h3>上传文件</h3>
+                <p>表头乱时，再打开大模型识别。</p>
+              </div>
+            </div>
+            <strong>先分析</strong>
           </div>
-        </div>
-        <ImportView
-          onOpenDashboard={onOpenDashboard}
-          onOpenPending={() => {
-            const section = document.getElementById("pending-maintenance");
-            section?.scrollIntoView({ behavior: "smooth", block: "start" });
-          }}
+          <ImportView
+            onOpenDashboard={onOpenDashboard}
+            onOpenPending={() => {
+              const section = document.getElementById("pending-maintenance");
+              section?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }}
+            onBackupChanged={refreshBackups}
+            onImported={onImported}
+          />
+        </section>
+
+        <section className="maintenance-section" id="pending-maintenance">
+          <div className="maintenance-head">
+            <div>
+              <span>2</span>
+              <div>
+                <h3>处理待确认</h3>
+                <p>不确定的客户和保单，先让人确认。</p>
+              </div>
+            </div>
+            <strong>{pending.length} 条</strong>
+          </div>
+          <PendingList items={pending} onResolve={onResolve} />
+        </section>
+
+        <section className="maintenance-section">
+          <div className="maintenance-head">
+            <div>
+              <span>3</span>
+              <div>
+                <h3>同步飞书</h3>
+                <p>页面不执行同步，把链接交给 Agent。</p>
+              </div>
+            </div>
+            <strong>Agent 执行</strong>
+          </div>
+          <FeishuAgentGuide />
+        </section>
+      </div>
+
+      <aside className="maintenance-aside">
+        <BackupPanel
+          refreshKey={backupVersion}
+          onBackupChanged={refreshBackups}
+          onDataCleared={onRestored}
           onRestored={onRestored}
-          onImported={onImported}
         />
-      </section>
-
-      <section className="maintenance-section" id="pending-maintenance">
-        <div className="maintenance-head">
-          <div>
-            <span>2</span>
-            <h3>需要确认</h3>
-          </div>
-          <strong>{pending.length} 条</strong>
-        </div>
-        <PendingList items={pending} onResolve={onResolve} />
-      </section>
-
-      <section className="maintenance-section">
-        <div className="maintenance-head">
-          <div>
-            <span>3</span>
-            <h3>飞书同步</h3>
-          </div>
-        </div>
-        <FeishuAgentGuide />
-      </section>
+      </aside>
     </div>
   );
 }
@@ -630,7 +648,7 @@ function SupportView() {
         <div className="support-copy">
           <span>微信群</span>
           <h3>扫码进群交流</h3>
-          <p>导入、提醒、飞书同步和使用建议，都可以在群里反馈。</p>
+          <p>导入、提醒、飞书同步和使用建议，都可以在群里反馈。这个二维码是公开宣传和社群入口，不含客户数据，开源发布可以保留。</p>
         </div>
         <div className="support-qr">
           <img src="/support/community-qr.png" alt="微信群二维码" />
@@ -1304,12 +1322,12 @@ function ImportView({
   onImported,
   onOpenDashboard,
   onOpenPending,
-  onRestored,
+  onBackupChanged,
 }: {
   onImported: (summary: Awaited<ReturnType<typeof importWorkbooks>>) => Promise<void>;
   onOpenDashboard: () => void;
   onOpenPending: () => void;
-  onRestored: () => Promise<void>;
+  onBackupChanged: () => void;
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [analysis, setAnalysis] = useState<ImportAnalysisResult | null>(null);
@@ -1318,11 +1336,8 @@ function ImportView({
   const [aiKey, setAiKey] = useState("");
   const [useAi, setUseAi] = useState(false);
   const [lastSummary, setLastSummary] = useState<Awaited<ReturnType<typeof importWorkbooks>> | null>(null);
-  const [backups, setBackups] = useState<DataBackupItem[]>([]);
-  const [selectedBackup, setSelectedBackup] = useState("");
   const [loading, setLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const [backupLoading, setBackupLoading] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
   const hasImportSource = files.length > 0;
   const hasImportableTables = Boolean(
@@ -1344,16 +1359,6 @@ function ImportView({
     };
   }
 
-  async function refreshBackups() {
-    const result = await listBackups();
-    setBackups(result.items);
-    setSelectedBackup((current) =>
-      result.items.some((item) => item.fileName === current)
-        ? current
-        : result.items[0]?.fileName || "",
-    );
-  }
-
   async function fileToUpload(file: File) {
     const buffer = await file.arrayBuffer();
     const bytes = new Uint8Array(buffer);
@@ -1369,7 +1374,6 @@ function ImportView({
   }
 
   useEffect(() => {
-    refreshBackups().catch((error: unknown) => setBackupMessage(String(error)));
     getAiSettings()
       .then((settings) => {
         setAiSettings(settings);
@@ -1403,35 +1407,71 @@ function ImportView({
   }
 
   return (
-    <>
-      <h2>导入</h2>
-      <p className="section-note">上传客户、保单或家庭保障表，先识别字段，再确认导入。</p>
-      <div className="import-grid import-grid-single">
-        <label className="file-picker">
-          上传文件
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            multiple
-            onChange={(event) => {
-              setFiles(Array.from(event.target.files ?? []));
-              setAnalysis(null);
-              setLastSummary(null);
-            }}
-          />
-          <span>{files.length > 0 ? files.map((file) => file.name).join("、") : "选择 Excel 或 CSV"}</span>
-        </label>
-      </div>
-      <section className="ai-import-options" aria-label="大模型字段识别">
-        <label className="inline-check">
-          <input
-            type="checkbox"
-            checked={useAi}
-            onChange={(event) => setUseAi(event.target.checked)}
-          />
-          <span>表头不标准时，用大模型识别字段</span>
-        </label>
-        {useAi && (
+    <div className="import-panel">
+      <div className="import-upload-grid">
+        <div>
+          <label className="file-picker">
+            <span className="file-picker-icon">表</span>
+            <span className="file-picker-copy">
+              <b>选择 Excel 或 CSV</b>
+              <small>
+                {files.length > 0
+                  ? files.map((file) => file.name).join("、")
+                  : "先看识别结果，确认后才导入。"}
+              </small>
+            </span>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              multiple
+              onChange={(event) => {
+                setFiles(Array.from(event.target.files ?? []));
+                setAnalysis(null);
+                setLastSummary(null);
+              }}
+            />
+            <span className="file-picker-button">选择文件</span>
+          </label>
+          <div className="import-actions">
+            <button
+              className="primary"
+              disabled={analyzing || !hasImportSource}
+              onClick={analyzeSelectedFiles}
+            >
+              {analyzing ? "分析中" : "分析文件"}
+            </button>
+            <button
+              className="ghost"
+              disabled={loading || !hasImportSource || !hasImportableTables}
+              onClick={async () => {
+                setLoading(true);
+                setLastSummary(null);
+                try {
+                  const backup = await createBackup("auto-before-import");
+                  setBackupMessage(`已自动备份：${backup.backup.fileName}`);
+                  const summary = await importWorkbooks(await buildImportInput());
+                  setLastSummary(summary);
+                  onBackupChanged();
+                  await onImported(summary);
+                } finally {
+                  setLoading(false);
+                }
+              }}
+            >
+              {loading ? "导入中" : "确认导入"}
+            </button>
+          </div>
+        </div>
+        <section className="ai-import-options" aria-label="大模型字段识别">
+          <label className="inline-check">
+            <span>大模型识别</span>
+            <input
+              type="checkbox"
+              checked={useAi}
+              onChange={(event) => setUseAi(event.target.checked)}
+            />
+          </label>
+          <p>只在表头不标准时用。Key 保存在本机。</p>
           <div className="ai-import-grid">
             <label>
               模型
@@ -1453,39 +1493,11 @@ function ImportView({
                 value={aiKey}
                 placeholder={aiSettings?.apiKeyConfigured ? "已保存，可留空" : "粘贴后会保存在本机"}
                 onChange={(event) => setAiKey(event.target.value)}
+                disabled={!useAi}
               />
             </label>
           </div>
-        )}
-      </section>
-      <div className="import-actions">
-        <button
-          className="primary"
-          disabled={analyzing || !hasImportSource}
-          onClick={analyzeSelectedFiles}
-        >
-          {analyzing ? "分析中" : "分析文件"}
-        </button>
-        <button
-          className="ghost"
-          disabled={loading || !hasImportSource || !hasImportableTables}
-          onClick={async () => {
-            setLoading(true);
-            setLastSummary(null);
-            try {
-              const backup = await createBackup("auto-before-import");
-              setBackupMessage(`已自动备份：${backup.backup.fileName}`);
-              const summary = await importWorkbooks(await buildImportInput());
-              setLastSummary(summary);
-              await refreshBackups();
-              await onImported(summary);
-            } finally {
-              setLoading(false);
-            }
-          }}
-        >
-          {loading ? "导入中" : "确认导入"}
-        </button>
+        </section>
       </div>
       {analysis && <ImportAnalysisSummary analysis={analysis} />}
       {lastSummary && (
@@ -1523,13 +1535,53 @@ function ImportView({
           </div>
         </section>
       )}
-      <section className="backup-panel">
-        <div className="backup-head">
-          <h3>备份 / 恢复</h3>
-        </div>
-        <div className="backup-actions">
+      {backupMessage && <p className="backup-message">{backupMessage}</p>}
+    </div>
+  );
+}
+
+function BackupPanel({
+  refreshKey,
+  onBackupChanged,
+  onDataCleared,
+  onRestored,
+}: {
+  refreshKey: number;
+  onBackupChanged: () => void;
+  onDataCleared: () => Promise<void>;
+  onRestored: () => Promise<void>;
+}) {
+  const [backups, setBackups] = useState<DataBackupItem[]>([]);
+  const [selectedBackup, setSelectedBackup] = useState("");
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupMessage, setBackupMessage] = useState("");
+  const [showBackups, setShowBackups] = useState(false);
+
+  async function refreshBackups() {
+    const result = await listBackups();
+    setBackups(result.items);
+    setSelectedBackup((current) =>
+      result.items.some((item) => item.fileName === current)
+        ? current
+        : result.items[0]?.fileName || "",
+    );
+  }
+
+  useEffect(() => {
+    refreshBackups().catch((error: unknown) => setBackupMessage(String(error)));
+  }, [refreshKey]);
+
+  return (
+    <section className="backup-panel">
+      <h3>常用维护</h3>
+      <div className="backup-actions">
+        <article className="backup-action-card">
+          <div>
+            <b>备份当前数据</b>
+            <span>导入前会自动备份。</span>
+          </div>
           <button
-            className="primary"
+            className="ghost"
             disabled={backupLoading}
             onClick={async () => {
               setBackupLoading(true);
@@ -1537,6 +1589,7 @@ function ImportView({
                 await createBackup("manual");
                 setBackupMessage("已备份");
                 await refreshBackups();
+                onBackupChanged();
               } finally {
                 setBackupLoading(false);
               }
@@ -1544,42 +1597,101 @@ function ImportView({
           >
             {backupLoading ? "处理中" : "备份"}
           </button>
-          <div className="restore-action">
-            <select
-              aria-label="选择备份"
-              value={selectedBackup}
-              onChange={(event) => setSelectedBackup(event.target.value)}
-              disabled={backupLoading || backups.length === 0}
-            >
-              <option value="">选择备份</option>
-              {backups.map((item) => (
-                <option key={item.fileName} value={item.fileName}>
-                  {backupOptionLabel(item)}
-                </option>
-              ))}
-            </select>
-            <button
-              className="ghost"
-              disabled={backupLoading || !selectedBackup}
-              onClick={async () => {
-                if (!selectedBackup || !window.confirm("恢复后会覆盖当前数据，继续？")) return;
-                setBackupLoading(true);
-                try {
-                  await restoreBackup(selectedBackup);
-                  setBackupMessage("已恢复");
-                  await onRestored();
-                } finally {
-                  setBackupLoading(false);
-                }
-              }}
-            >
-              恢复
-            </button>
+        </article>
+        <article className="backup-action-card">
+          <div>
+            <b>恢复旧备份</b>
+            <span>恢复前会再次确认。</span>
           </div>
+          <button
+            className="ghost"
+            disabled={backupLoading || backups.length === 0}
+            onClick={async () => {
+              const backupToRestore = selectedBackup || backups[0]?.fileName;
+              if (!backupToRestore || !window.confirm("恢复后会覆盖当前数据，继续？")) return;
+              setBackupLoading(true);
+              try {
+                await restoreBackup(backupToRestore);
+                setBackupMessage("已恢复");
+                await refreshBackups();
+                await onRestored();
+              } finally {
+                setBackupLoading(false);
+              }
+            }}
+          >
+            恢复
+          </button>
+        </article>
+        <article className="backup-action-card">
+          <div>
+            <b>查看导入记录</b>
+            <span>{backups[0] ? backupOptionLabel(backups[0]) : "还没有备份"}</span>
+          </div>
+          <button
+            className="ghost"
+            onClick={async () => {
+              await refreshBackups();
+              setShowBackups((current) => !current);
+            }}
+            disabled={backupLoading}
+          >
+            {showBackups ? "收起" : "查看"}
+          </button>
+        </article>
+        <article className="backup-action-card danger">
+          <div>
+            <b>清空数据</b>
+            <span>会先自动备份。</span>
+          </div>
+          <button
+            className="danger-action"
+            disabled={backupLoading}
+            onClick={async () => {
+              if (!window.confirm("将清空客户、保单、提醒和待确认。清空前会自动备份，继续？")) {
+                return;
+              }
+              const confirmation = window.prompt("二次确认：请输入“清空数据”");
+              if (confirmation !== "清空数据") {
+                setBackupMessage("已取消清空");
+                return;
+              }
+              setBackupLoading(true);
+              try {
+                const result = await clearLocalData(confirmation);
+                setBackupMessage(`已清空，已备份：${result.backup.fileName}`);
+                await refreshBackups();
+                onBackupChanged();
+                await onDataCleared();
+              } finally {
+                setBackupLoading(false);
+              }
+            }}
+          >
+            清空
+          </button>
+        </article>
+      </div>
+      {showBackups && (
+        <div className="backup-history" aria-label="最近备份">
+          {backups.length === 0 ? (
+            <p>还没有备份记录。</p>
+          ) : (
+            backups.slice(0, 6).map((item) => (
+              <button
+                key={item.fileName}
+                type="button"
+                className={item.fileName === selectedBackup ? "active" : ""}
+                onClick={() => setSelectedBackup(item.fileName)}
+              >
+                {backupOptionLabel(item)}
+              </button>
+            ))
+          )}
         </div>
-        {backupMessage && <p className="backup-message">{backupMessage}</p>}
-      </section>
-    </>
+      )}
+      {backupMessage && <p className="backup-message">{backupMessage}</p>}
+    </section>
   );
 }
 
@@ -2297,568 +2409,50 @@ function ManualTodo({ onCreated }: { onCreated: () => Promise<void> }) {
 }
 
 function FeishuAgentGuide() {
+  const [copied, setCopied] = useState(false);
+  const command =
+    "我已经新建了飞书多维表格，链接是：____。请检查本机 lark-cli 授权，先给同步计划；我确认后，帮我创建客户、保单、提醒三张表并同步数据。";
+
+  async function copyCommand() {
+    await navigator.clipboard.writeText(command);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+
   return (
     <div className="agent-sync-guide">
-      <section className="agent-sync-brief">
-        <h4>交给 AI 助手同步</h4>
-        <p>
-          这里不让用户手动填 token 或配置表结构。请让 WorkBuddy、Codex 这类 AI 助手在本机通过
-          lark-cli 操作飞书。
-        </p>
-      </section>
-
-      <section className="agent-sync-command" aria-label="给 AI 助手的指令">
-        <span>复制给 AI 助手</span>
-        <p>
-          请检查本机 lark-cli 授权，用我提供的飞书多维表格链接同步 AI保顾问的客户、保单和提醒；
-          先给我同步计划，我确认后再执行。
-        </p>
-      </section>
-
       <div className="agent-sync-flow">
         <article>
           <b>1</b>
           <div>
-            <h4>先确认权限</h4>
-            <p>检查本机 lark-cli 是否已登录；飞书多维表格必须可编辑。</p>
+            <h4>飞书新建空多维表格</h4>
+            <p>只要一个空表格，复制浏览器链接。</p>
           </div>
         </article>
         <article>
           <b>2</b>
           <div>
-            <h4>先出同步计划</h4>
-            <p>列出会写入哪些表、多少条客户、保单、提醒；不要直接执行。</p>
+            <h4>把链接发给 Agent</h4>
+            <p>WorkBuddy 或 Codex 会检查 lark-cli 授权。</p>
           </div>
         </article>
         <article>
           <b>3</b>
           <div>
-            <h4>确认后再写入</h4>
-            <p>用户确认后，通过 lark-cli 写入飞书；完成后报告新增、更新、跳过和失败。</p>
+            <h4>Agent 建表并同步</h4>
+            <p>自动准备客户、保单、提醒三张表。</p>
           </div>
         </article>
       </div>
 
-      <section className="agent-sync-rules">
-        <h4>边界</h4>
-        <ul>
-          <li>不要展示完整证件号、手机号或飞书授权信息。</li>
-          <li>不要把待确认数据当成已确认客户直接同步。</li>
-          <li>失败时说人话：缺授权、没编辑权限、链接不对，或网络失败。</li>
-        </ul>
-      </section>
-    </div>
-  );
-}
-
-function parseFeishuBaseToken(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return "";
-  }
-  const tokenFromLink = trimmed.match(/\bapp[A-Za-z0-9_]+\b/);
-  if (tokenFromLink) {
-    return tokenFromLink[0];
-  }
-  try {
-    const url = new URL(trimmed);
-    const tokenFromBasePath = url.pathname.match(/\/base\/([A-Za-z0-9_-]+)/);
-    if (tokenFromBasePath?.[1]) {
-      return tokenFromBasePath[1];
-    }
-  } catch {
-    const tokenFromLooseBasePath = trimmed.match(/\/base\/([A-Za-z0-9_-]+)/);
-    if (tokenFromLooseBasePath?.[1]) {
-      return tokenFromLooseBasePath[1];
-    }
-  }
-  return /^https?:\/\//.test(trimmed) ? "" : trimmed;
-}
-
-function FeishuSyncView({ onMessage }: { onMessage: (message: string) => void }) {
-  const [baseInput, setBaseInput] = useState("");
-  const [customersTable, setCustomersTable] = useState("客户");
-  const [policiesTable, setPoliciesTable] = useState("保单");
-  const [remindersTable, setRemindersTable] = useState("提醒");
-  const [calendarId, setCalendarId] = useState("primary");
-  const [calendarStartTime, setCalendarStartTime] = useState("09:00");
-  const [limit, setLimit] = useState("20");
-  const [baseSyncStrategy, setBaseSyncStrategy] = useState<"incremental" | "batch-create">("batch-create");
-  const [confirmFullSync, setConfirmFullSync] = useState(false);
-  const [loadingMode, setLoadingMode] = useState<
-    | "setup-all"
-    | "sync-all"
-    | "schema-plan"
-    | "schema-execute"
-    | "calendar-plan"
-    | "calendar-execute"
-    | "sync-plan"
-    | "sync-execute"
-    | "event-plan"
-    | "event-execute"
-    | null
-  >(null);
-  const [calendarViewName, setCalendarViewName] = useState("提醒日历");
-  const [schemaResult, setSchemaResult] = useState<FeishuBaseSchemaResult | null>(null);
-  const [calendarResult, setCalendarResult] = useState<FeishuBaseCalendarViewResult | null>(null);
-  const [eventResult, setEventResult] = useState<FeishuCalendarSyncResult | null>(null);
-  const [result, setResult] = useState<FeishuBaseSyncResult | null>(null);
-  const baseToken = parseFeishuBaseToken(baseInput);
-  const canReadBaseInput = Boolean(baseToken);
-
-  function tableNames() {
-    return {
-      customers: customersTable.trim() || "客户",
-      policies: policiesTable.trim() || "保单",
-      reminders: remindersTable.trim() || "提醒",
-    };
-  }
-
-  function syncLimit() {
-    const parsedLimit = Number(limit);
-    return Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
-  }
-
-  function requireBaseToken() {
-    const trimmedToken = baseToken.trim();
-    if (!trimmedToken) {
-      onMessage(baseInput.trim() ? "这条链接里没有找到飞书多维表格标识" : "请先粘贴飞书多维表格链接");
-      return "";
-    }
-    return trimmedToken;
-  }
-
-  async function prepareSchema(mode: "plan" | "execute") {
-    const trimmedToken = requireBaseToken();
-    if (!trimmedToken) {
-      return;
-    }
-    setLoadingMode(mode === "plan" ? "schema-plan" : "schema-execute");
-    try {
-      const nextResult = await prepareFeishuBaseSchema({
-        baseToken: trimmedToken,
-        mode,
-        tableNames: tableNames(),
-      });
-      setSchemaResult(nextResult);
-      onMessage(
-        mode === "plan"
-          ? `表结构计划：${nextResult.summary.planned} 条命令`
-          : `表结构准备：执行 ${nextResult.summary.executed}，跳过已有 ${nextResult.summary.skippedExisting}，失败 ${nextResult.summary.failed}`,
-      );
-    } finally {
-      setLoadingMode(null);
-    }
-  }
-
-  async function prepareCalendarView(mode: "plan" | "execute") {
-    const trimmedToken = requireBaseToken();
-    if (!trimmedToken) {
-      return;
-    }
-    setLoadingMode(mode === "plan" ? "calendar-plan" : "calendar-execute");
-    try {
-      const nextResult = await prepareFeishuCalendarView({
-        baseToken: trimmedToken,
-        mode,
-        remindersTable: tableNames().reminders,
-        viewName: calendarViewName.trim() || "提醒日历",
-      });
-      setCalendarResult(nextResult);
-      onMessage(
-        mode === "plan"
-          ? `日历视图计划：${nextResult.summary.planned} 条命令`
-          : `日历视图准备：执行 ${nextResult.summary.executed}，跳过已有 ${nextResult.summary.skippedExisting}，失败 ${nextResult.summary.failed}`,
-      );
-    } finally {
-      setLoadingMode(null);
-    }
-  }
-
-  async function run(mode: "plan" | "execute") {
-    const trimmedToken = requireBaseToken();
-    if (!trimmedToken) {
-      return;
-    }
-    setLoadingMode(mode === "plan" ? "sync-plan" : "sync-execute");
-    try {
-      const nextResult = await syncFeishuBase({
-        baseToken: trimmedToken,
-        mode,
-        strategy: baseSyncStrategy,
-        limit: syncLimit(),
-        confirmFullSync,
-        tables: tableNames(),
-      });
-      setResult(nextResult);
-      onMessage(
-        mode === "plan"
-          ? `同步计划：${nextResult.summary.planned} 条，批次 ${nextResult.summary.batches ?? 0}，跳过已有 ${nextResult.summary.skippedExisting ?? 0}`
-          : `同步执行：新建 ${nextResult.summary.created}，更新 ${nextResult.summary.updated ?? 0}，跳过已有 ${nextResult.summary.skippedExisting ?? 0}，失败 ${nextResult.summary.failed}`,
-      );
-    } finally {
-      setLoadingMode(null);
-    }
-  }
-
-  async function syncCalendarEvents(mode: "plan" | "execute") {
-    setLoadingMode(mode === "plan" ? "event-plan" : "event-execute");
-    try {
-      const nextResult = await syncFeishuCalendar({
-        mode,
-        calendarId: calendarId.trim() || "primary",
-        startTime: calendarStartTime.trim() || "09:00",
-        durationMinutes: 30,
-        limit: syncLimit(),
-        confirmFullSync,
-      });
-      setEventResult(nextResult);
-      onMessage(
-        mode === "plan"
-          ? `飞书日历计划：${nextResult.summary.planned} 条关键提醒，另有 ${nextResult.summary.skippedByLimit} 条未纳入本次计划`
-          : `飞书日历同步：新建 ${nextResult.summary.created}，跳过已有 ${nextResult.summary.skippedExisting}，失败 ${nextResult.summary.failed}`,
-      );
-    } finally {
-      setLoadingMode(null);
-    }
-  }
-
-  async function prepareEverything() {
-    const trimmedToken = requireBaseToken();
-    if (!trimmedToken) {
-      return;
-    }
-    setLoadingMode("setup-all");
-    try {
-      const nextSchemaResult = await prepareFeishuBaseSchema({
-        baseToken: trimmedToken,
-        mode: "execute",
-        tableNames: tableNames(),
-      });
-      setSchemaResult(nextSchemaResult);
-
-      const nextCalendarResult = await prepareFeishuCalendarView({
-        baseToken: trimmedToken,
-        mode: "execute",
-        remindersTable: tableNames().reminders,
-        viewName: calendarViewName.trim() || "提醒日历",
-      });
-      setCalendarResult(nextCalendarResult);
-
-      onMessage(
-        `飞书表格已准备：表字段执行 ${nextSchemaResult.summary.executed}，日历视图执行 ${nextCalendarResult.summary.executed}，失败 ${nextSchemaResult.summary.failed + nextCalendarResult.summary.failed}`,
-      );
-    } finally {
-      setLoadingMode(null);
-    }
-  }
-
-  async function syncEverything() {
-    const trimmedToken = requireBaseToken();
-    if (!trimmedToken) {
-      return;
-    }
-    setLoadingMode("sync-all");
-    try {
-      const nextResult = await syncFeishuBase({
-        baseToken: trimmedToken,
-        mode: "execute",
-        strategy: baseSyncStrategy,
-        limit: syncLimit(),
-        confirmFullSync,
-        tables: tableNames(),
-      });
-      setResult(nextResult);
-
-      const nextEventResult = await syncFeishuCalendar({
-        mode: "execute",
-        calendarId: calendarId.trim() || "primary",
-        startTime: calendarStartTime.trim() || "09:00",
-        durationMinutes: 30,
-        limit: syncLimit(),
-        confirmFullSync,
-      });
-      setEventResult(nextEventResult);
-
-      onMessage(
-        `同步完成：多维表格新建 ${nextResult.summary.created}，更新 ${nextResult.summary.updated ?? 0}，关键日历新建 ${nextEventResult.summary.created}，失败 ${nextResult.summary.failed + nextEventResult.summary.failed}`,
-      );
-    } finally {
-      setLoadingMode(null);
-    }
-  }
-
-  return (
-    <div className="sync-layout">
-      <section className="sync-form sync-simple">
-        <div className="sync-simple-header">
-          <h3>飞书链接粘这里</h3>
-          <p>用一个你能编辑的飞书多维表格。新建空表也可以，复制浏览器地址栏的链接，粘到下面。</p>
+      <section className="agent-sync-command" aria-label="给 AI 助手的指令">
+        <div>
+          <span>复制给 Agent</span>
+          <p>{command}</p>
         </div>
-
-        <label className="sync-link-field">
-          飞书多维表格链接
-          <input
-            value={baseInput}
-            onChange={(event) => setBaseInput(event.target.value)}
-            placeholder="https://xxx.feishu.cn/base/..."
-          />
-        </label>
-        {baseInput.trim() && !canReadBaseInput && (
-          <p className="inline-error">这条链接里没有找到飞书多维表格标识，请确认复制的是飞书多维表格链接。</p>
-        )}
-
-        <div className="sync-requirements">
-          <strong>这里需要什么</strong>
-          <span>可以用你新建的空多维表格，也可以用已有表格；但你必须有编辑权限。</span>
-          <span>普通飞书文档、表格、只读链接不能用。</span>
-          <span>第一次同步前，本机需要先完成飞书授权，否则按钮会报未授权。</span>
-        </div>
-
-        <div className="sync-primary-steps">
-          <button className="primary" onClick={prepareEverything} disabled={loadingMode !== null}>
-            {loadingMode === "setup-all" ? "准备中" : "1. 准备飞书表格"}
-          </button>
-          <button className="primary" onClick={syncEverything} disabled={loadingMode !== null}>
-            {loadingMode === "sync-all" ? "同步中" : "2. 同步提醒数据"}
-          </button>
-        </div>
-
-        <div className="sync-note">
-          <strong>默认会同步什么</strong>
-          <span>客户、保单、提醒会进多维表格；标为关键的未完成提醒会进飞书日历。</span>
-        </div>
-
-        <details className="sync-advanced">
-          <summary>高级设置</summary>
-          <div className="sync-grid">
-            <label>
-              客户表
-              <input value={customersTable} onChange={(event) => setCustomersTable(event.target.value)} />
-            </label>
-            <label>
-              保单表
-              <input value={policiesTable} onChange={(event) => setPoliciesTable(event.target.value)} />
-            </label>
-            <label>
-              提醒表
-              <input value={remindersTable} onChange={(event) => setRemindersTable(event.target.value)} />
-            </label>
-          </div>
-          <label>
-            本次条数上限
-            <input
-              type="number"
-              min="1"
-              value={limit}
-              onChange={(event) => setLimit(event.target.value)}
-              placeholder="留空表示全量"
-            />
-          </label>
-          <div className="segmented-filter sync-strategy" aria-label="Base 同步方式">
-            <button
-              className={baseSyncStrategy === "incremental" ? "active" : ""}
-              onClick={() => setBaseSyncStrategy("incremental")}
-              type="button"
-            >
-              增量更新
-            </button>
-            <button
-              className={baseSyncStrategy === "batch-create" ? "active" : ""}
-              onClick={() => setBaseSyncStrategy("batch-create")}
-              type="button"
-            >
-              批量创建
-            </button>
-          </div>
-          <label>
-            日历视图名称
-            <input
-              value={calendarViewName}
-              onChange={(event) => setCalendarViewName(event.target.value)}
-            />
-          </label>
-          <div className="sync-grid sync-grid-compact">
-            <label>
-              飞书日历 ID
-              <input
-                value={calendarId}
-                onChange={(event) => setCalendarId(event.target.value)}
-                placeholder="primary 或 cal_xxx"
-              />
-            </label>
-            <label>
-              关键提醒时间
-              <input
-                type="time"
-                value={calendarStartTime}
-                onChange={(event) => setCalendarStartTime(event.target.value)}
-              />
-            </label>
-          </div>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={confirmFullSync}
-              onChange={(event) => setConfirmFullSync(event.target.checked)}
-            />
-            允许全量执行
-          </label>
-          <div className="sync-actions sync-plan-actions">
-            <button className="ghost" onClick={() => prepareSchema("plan")} disabled={loadingMode !== null}>
-              {loadingMode === "schema-plan" ? "生成中" : "表结构计划"}
-            </button>
-            <button className="ghost" onClick={() => prepareCalendarView("plan")} disabled={loadingMode !== null}>
-              {loadingMode === "calendar-plan" ? "生成中" : "日历视图计划"}
-            </button>
-            <button className="ghost" onClick={() => run("plan")} disabled={loadingMode !== null}>
-              {loadingMode === "sync-plan" ? "生成中" : "数据计划"}
-            </button>
-            <button className="ghost" onClick={() => syncCalendarEvents("plan")} disabled={loadingMode !== null}>
-              {loadingMode === "event-plan" ? "生成中" : "飞书日历计划"}
-            </button>
-          </div>
-        </details>
-      </section>
-
-      <section className="sync-result sync-status">
-        <h3>同步结果</h3>
-        {schemaResult ? (
-          <>
-            <h4>飞书表格</h4>
-            <div className="sync-summary">
-              <span>计划 {schemaResult.summary.planned}</span>
-              <span>执行 {schemaResult.summary.executed}</span>
-              <span>跳过 {schemaResult.summary.skippedExisting}</span>
-              <span>失败 {schemaResult.summary.failed}</span>
-            </div>
-            <details className="sync-result-details">
-              <summary>查看表结构明细</summary>
-              <div className="sync-preview">
-                {schemaResult.commands.map((command, index) => (
-                  <article key={`schema:${command.table}:${command.fieldName ?? command.action}:${index}`}>
-                    <span>{command.action} · {command.tableName}</span>
-                    <strong>{command.fieldName ?? command.tableName}</strong>
-                    <code>{command.argv.join(" ")}</code>
-                  </article>
-                ))}
-              </div>
-            </details>
-            {schemaResult.errors.length > 0 && (
-              <div className="sync-errors">
-                {schemaResult.errors.slice(0, 5).map((error) => (
-                  <p key={`schema-error:${error.table}:${error.fieldName ?? error.action}`}>
-                    {error.table} · {error.fieldName ?? error.action} · {error.message}
-                  </p>
-                ))}
-              </div>
-            )}
-          </>
-        ) : (
-          <p className="empty-state">还没有同步结果。先粘贴飞书链接，再按左侧按钮操作。</p>
-        )}
-        {calendarResult && (
-          <div className="calendar-view-result">
-            <h4>日历视图</h4>
-            <div className="sync-summary">
-              <span>计划 {calendarResult.summary.planned}</span>
-              <span>执行 {calendarResult.summary.executed}</span>
-              <span>跳过 {calendarResult.summary.skippedExisting}</span>
-              <span>失败 {calendarResult.summary.failed}</span>
-            </div>
-            <details className="sync-result-details">
-              <summary>查看日历视图明细</summary>
-              <div className="sync-preview">
-                {calendarResult.commands.map((command, index) => (
-                  <article key={`calendar:${command.action}:${index}`}>
-                    <span>{command.action} · {command.tableName}</span>
-                    <strong>{command.viewName}</strong>
-                    <code>{command.argv.join(" ")}</code>
-                  </article>
-                ))}
-              </div>
-            </details>
-            {calendarResult.errors.length > 0 && (
-              <div className="sync-errors">
-                {calendarResult.errors.slice(0, 5).map((error) => (
-                  <p key={`calendar-error:${error.action}`}>{error.action} · {error.message}</p>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-        {result ? (
-          <>
-            <h4>客户、保单、提醒</h4>
-            <div className="sync-summary">
-              <span>计划 {result.summary.planned}</span>
-              <span>新建 {result.summary.created}</span>
-              <span>更新 {result.summary.updated ?? 0}</span>
-              <span>失败 {result.summary.failed}</span>
-              <span>跳过 {result.summary.skippedByLimit ?? result.summary.skippedExisting ?? 0}</span>
-              {result.summary.batches !== undefined && <span>批次 {result.summary.batches}</span>}
-            </div>
-            <details className="sync-result-details">
-              <summary>查看数据同步明细</summary>
-              <div className="sync-preview">
-                {result.commands?.map((command) => (
-                  <article key={`${command.table}:${command.externalId}`}>
-                    <span>{command.operation === "create" ? "新建" : "更新"} · {command.tableRef}</span>
-                    <strong>{String(command.fields["外部ID"])}</strong>
-                    <code>{command.argv.join(" ")}</code>
-                  </article>
-                ))}
-                {result.batches?.map((batch, index) => (
-                  <article key={`${batch.table}:${batch.tableRef}:${index}`}>
-                    <span>{batch.operation === "batch_create" ? "批量创建" : "跳过已有"} · {batch.tableRef}</span>
-                    <strong>{batch.planned} 条</strong>
-                    <code>{batch.argv.join(" ")}</code>
-                  </article>
-                ))}
-              </div>
-            </details>
-            {result.errors.length > 0 && (
-              <div className="sync-errors">
-                {result.errors.slice(0, 5).map((error) => (
-                  <p key={`${error.table}:${error.externalId}`}>
-                    {error.table} · {error.externalId} · {error.message}
-                  </p>
-                ))}
-              </div>
-            )}
-          </>
-        ) : null}
-        {eventResult && (
-          <div className="calendar-view-result">
-            <h4>飞书日历</h4>
-            <div className="sync-summary">
-              <span>计划 {eventResult.summary.planned}</span>
-              <span>新建 {eventResult.summary.created}</span>
-              <span>跳过已有 {eventResult.summary.skippedExisting}</span>
-              <span>失败 {eventResult.summary.failed}</span>
-              <span>跳过 {eventResult.summary.skippedByLimit}</span>
-            </div>
-            <details className="sync-result-details">
-              <summary>查看飞书日历明细</summary>
-              <div className="sync-preview">
-                {eventResult.commands.map((command) => (
-                  <article key={`event:${command.externalId}`}>
-                    <span>{command.operation === "create" ? "创建日程" : "已存在"} · {command.calendarId}</span>
-                    <strong>{command.title}</strong>
-                    <code>{command.argv.length > 0 ? command.argv.join(" ") : command.eventId ?? ""}</code>
-                  </article>
-                ))}
-              </div>
-            </details>
-            {eventResult.errors.length > 0 && (
-              <div className="sync-errors">
-                {eventResult.errors.slice(0, 5).map((error) => (
-                  <p key={`event-error:${error.externalId}`}>{error.externalId} · {error.message}</p>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        <button className="primary" type="button" onClick={copyCommand}>
+          {copied ? "已复制" : "复制"}
+        </button>
       </section>
     </div>
   );

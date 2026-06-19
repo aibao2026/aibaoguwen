@@ -410,6 +410,13 @@ export function restoreBackup(fileName: string) {
   });
 }
 
+export function clearLocalData(confirm: string) {
+  return request<{ ok: true; backup: DataBackupItem; stats: LocalDataStats }>("/api/local-data/clear", {
+    method: "POST",
+    body: JSON.stringify({ confirm }),
+  });
+}
+
 export function getReminderDetail(id: string) {
   return request<ReminderDetail>(`/api/reminders/${encodeURIComponent(id)}/detail`);
 }
