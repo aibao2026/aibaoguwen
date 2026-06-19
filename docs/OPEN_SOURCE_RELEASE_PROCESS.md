@@ -15,7 +15,7 @@
 
 - 使用白名单导出，不使用“复制全部再排除”的方式。
 - 公开发布区可以是独立 Git 仓库。
-- 导出脚本不会复制 `data/`、`data/backups/`、`.omx/`、`node_modules/`、`示范文件/`、`docs/brand/`、真实 Excel/PDF 或本地构建产物。
+- 导出脚本不会复制 `data/`、`data/backups/`、`.omx/`、`node_modules/`、`示范文件/`、`docs/brand/`、真实 Excel/PDF、SQLite 数据库或本地构建产物。
 - 默认只导出已经确认可公开的图片资产。`src/web/public/support/community-qr.png` 是公开宣传和社群入口二维码，可以保留；私人二维码、内部品牌素材、客户截图或聊天截图仍然不得发布。
 - 每次发布前都在公开发布区重新安装、测试和构建。
 
@@ -82,6 +82,14 @@ test ! -e 示范文件
 find . -name "*.sqlite" -o -name "*.sqlite-*"
 ```
 
+建议再做一次文本扫描，确认没有把账号、密码、token 或本机运行数据带入公开发布区：
+
+```bash
+rg -n "密码|password|token|cookie|session|Base token|customer-reminders.sqlite|data/backups|\\.env|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}" .
+```
+
+扫描命中普通说明文档时，需要人工确认它只是泛化安全说明，不包含真实账号、真实应用密码、完整客户资料或真实飞书标识。
+
 `npm audit --omit=dev` 当前会报告 `xlsx` 已知高危风险且暂无官方修复版本。alpha 阶段只建议导入自己可信来源的本地 Excel，不要把本项目改造成公开上传服务。
 
 ## 禁止发布
@@ -98,6 +106,7 @@ find . -name "*.sqlite" -o -name "*.sqlite-*"
 - 真实客户 Excel
 - 真实客户 PDF
 - 真实飞书链接或 Base token
+- 坚果云账号或应用密码
 - session cookie
 - 带客户信息的截图
 - 私人二维码
@@ -110,5 +119,5 @@ find . -name "*.sqlite" -o -name "*.sqlite-*"
 1. 在私有开发区完成代码修改和本地验证。
 2. 运行 `npm run export:open-source -- --clean` 导出公开发布区。
 3. 在公开发布区运行安装、测试、构建和安全检查。
-4. 人工检查 README、SECURITY、OPEN_SOURCE_ALPHA 和示例数据说明。
+4. 人工检查 README、SECURITY、OPEN_SOURCE_ALPHA、data-security-and-cloud-backup 和示例数据说明。
 5. 确认公开发布区没有敏感数据后，再从公开发布区提交和推送 GitHub。

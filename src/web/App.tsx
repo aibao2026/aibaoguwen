@@ -8,28 +8,40 @@ import type { DatesSetArg, EventClickArg, EventContentArg, EventInput } from "@f
 import {
   analyzeImport,
   clearLocalData,
+  changeDatabasePassword,
+  connectCloudBackup,
   completeReminder,
   completeRemindersByDate,
   createBackup,
+  createCloudBackup,
   createTodo,
   deleteReminder,
+  enableDatabaseEncryption,
   getAiSettings,
-  getReminderDetail,
   getAuthStatus,
+  getCloudBackupStatus,
+  getDatabaseEncryptionStatus,
   getLocalDataStats,
+  getReminderDetail,
   importWorkbooks,
   listBackups,
+  listCloudBackups,
   listPendingConfirmations,
   listReminders,
   loginWithPassword,
   logout,
   reopenReminder,
   restoreBackup,
+  restoreCloudBackup,
   resolvePendingConfirmation,
   saveAiSettings,
+  unlockDatabase,
   type AiProviderId,
   type AiSettings,
+  type CloudBackupItem,
+  type CloudBackupStatus,
   type DataBackupItem,
+  type DatabaseEncryptionStatus,
   updateTodo,
   type KeyFieldChangeItem,
   type LocalDataStats,
@@ -50,6 +62,16 @@ const groupLabels: Record<ReminderItem["group"], string> = {
 };
 
 const WORK_NOTICE_STORAGE_KEY = "ai-baoguwen:work-notice";
+const CLOUD_BACKUP_COOKIE_NAME = "customer_reminders_cloud_backup";
+const DEFAULT_CLOUD_BACKUP_BASE_URL = "https://dav.jianguoyun.com/dav/";
+const DEFAULT_CLOUD_BACKUP_REMOTE_DIR = "客户提醒备份";
+
+interface RememberedCloudBackup {
+  baseUrl: string;
+  username: string;
+  password: string;
+  remoteDir: string;
+}
 
 const panelEyebrows: Record<Exclude<Tab, "dashboard">, string> = {
   maintenance: "数据维护",
@@ -145,6 +167,40 @@ function groupCount(reminders: ReminderItem[], group: ReminderItem["group"]) {
   return reminders.filter((item) => item.group === group).length;
 }
 
+function readCookie(name: string) {
+  const cookie = document.cookie
+    .split("; ")
+    .find((item) => item.startsWith(`${name}=`));
+  if (!cookie) return "";
+  return cookie.slice(name.length + 1);
+}
+
+function readRememberedCloudBackup(): RememberedCloudBackup | null {
+  try {
+    const raw = readCookie(CLOUD_BACKUP_COOKIE_NAME);
+    if (!raw) return null;
+    const parsed = JSON.parse(decodeURIComponent(raw)) as Partial<RememberedCloudBackup>;
+    if (!parsed.username || !parsed.password) return null;
+    return {
+      baseUrl: parsed.baseUrl || DEFAULT_CLOUD_BACKUP_BASE_URL,
+      username: parsed.username,
+      password: parsed.password,
+      remoteDir: parsed.remoteDir || DEFAULT_CLOUD_BACKUP_REMOTE_DIR,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeRememberedCloudBackup(input: RememberedCloudBackup) {
+  const value = encodeURIComponent(JSON.stringify(input));
+  document.cookie = `${CLOUD_BACKUP_COOKIE_NAME}=${value}; Max-Age=15552000; Path=/; SameSite=Strict`;
+}
+
+function clearRememberedCloudBackup() {
+  document.cookie = `${CLOUD_BACKUP_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Strict`;
+}
+
 function reminderPreviewText(item: ReminderItem) {
   return item.title.replace(/^.*?：/, "");
 }
@@ -177,6 +233,56 @@ function backupOptionLabel(item: DataBackupItem) {
     hour: "2-digit",
     minute: "2-digit",
   })} 的备份`;
+}
+
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function cloudConnectErrorMessage(error: unknown) {
+  const message = errorText(error);
+  if (message.includes("database_locked")) {
+    return "数据已锁定，请刷新后先输入数据密码";
+  }
+  if (message.includes("database_encryption_required")) {
+    return "请先启用数据保护";
+  }
+  if (message.includes("jianguoyun_credentials_required")) {
+    return "请填写坚果云账号和应用密码";
+  }
+  if (message.includes("jianguoyun_request_timeout")) {
+    return "坚果云连接超时，请检查网络后重试";
+  }
+  if (message.includes("jianguoyun_credentials_invalid")) {
+    return "账号或应用密码不对，官网登录密码不能用于这里";
+  }
+  if (message.includes("jianguoyun_access_denied")) {
+    return "坚果云拒绝访问，请检查 WebDAV 权限";
+  }
+  if (message.includes("jianguoyun_url_invalid")) {
+    return "坚果云地址不对，请使用 WebDAV 地址";
+  }
+  if (message.includes("jianguoyun_connection_failed")) {
+    return "坚果云连接失败，请检查账号和应用密码";
+  }
+  return "坚果云连接失败，请检查账号、应用密码和网络";
+}
+
+function cloudBackupLabel(item: CloudBackupItem) {
+  if (!item.modifiedAt) {
+    return item.fileName;
+  }
+  const date = new Date(item.modifiedAt);
+  if (Number.isNaN(date.getTime())) {
+    return item.fileName;
+  }
+  return `${date.toLocaleDateString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+  })} ${date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })} 坚果云备份`;
 }
 
 function groupColor(group: ReminderItem["group"]) {
@@ -250,8 +356,58 @@ function AuthGate({
   );
 }
 
+function DatabaseGate({
+  message,
+  onUnlock,
+}: {
+  message: string;
+  onUnlock: (password: string) => Promise<void>;
+}) {
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      await onUnlock(password);
+      setPassword("");
+    } catch {
+      setError("数据密码不正确");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="app-lock">
+      <form className="lock-panel" onSubmit={submit}>
+        <BrandMark />
+        <h1>数据已保护</h1>
+        <p>输入数据密码后继续使用。</p>
+        <label>
+          数据密码
+          <input
+            autoFocus
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </label>
+        {(error || message) && <p className="lock-error">{error || message}</p>}
+        <button className="primary" disabled={isSubmitting || !password.trim()}>
+          {isSubmitting ? "解锁中" : "解锁数据"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
 export function App() {
   const [authStatus, setAuthStatus] = useState<{ enabled: boolean; authenticated: boolean } | null>(null);
+  const [databaseStatus, setDatabaseStatus] = useState<DatabaseEncryptionStatus | null>(null);
   const [tab, setTab] = useState<Tab>("dashboard");
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [pending, setPending] = useState<PendingItem[]>([]);
@@ -282,10 +438,16 @@ export function App() {
     return status;
   }
 
+  async function refreshDatabaseStatus() {
+    const status = await getDatabaseEncryptionStatus();
+    setDatabaseStatus(status);
+    return status;
+  }
+
   useEffect(() => {
-    refreshAuthStatus()
-      .then((status) => {
-        if (status.authenticated) {
+    Promise.all([refreshAuthStatus(), refreshDatabaseStatus()])
+      .then(([auth, database]) => {
+        if (auth.authenticated && database.unlocked) {
           return refresh();
         }
         return undefined;
@@ -293,7 +455,7 @@ export function App() {
       .catch((error: unknown) => setMessage(String(error)));
   }, []);
 
-  if (!authStatus) {
+  if (!authStatus || !databaseStatus) {
     return (
       <main className="app-lock">
         <section className="lock-panel">
@@ -313,6 +475,23 @@ export function App() {
           await loginWithPassword(password);
           setMessage("已解锁");
           await refreshAuthStatus();
+          const database = await refreshDatabaseStatus();
+          if (database.unlocked) {
+            await refresh();
+          }
+        }}
+      />
+    );
+  }
+
+  if (databaseStatus.encrypted && !databaseStatus.unlocked) {
+    return (
+      <DatabaseGate
+        message={message}
+        onUnlock={async (password) => {
+          const status = await unlockDatabase(password);
+          setDatabaseStatus(status);
+          setMessage("数据已解锁");
           await refresh();
         }}
       />
@@ -456,7 +635,11 @@ export function App() {
         {tab === "maintenance" && (
           <Panel title="维护" eyebrow={panelEyebrows.maintenance}>
             <MaintenanceView
+              databaseStatus={databaseStatus}
               pending={pending}
+              onDatabaseStatusChanged={async () => {
+                await refreshDatabaseStatus();
+              }}
               onOpenDashboard={() => setTab("dashboard")}
               onRestored={async () => {
                 await refresh();
@@ -550,13 +733,17 @@ function Panel({
 }
 
 function MaintenanceView({
+  databaseStatus,
   pending,
+  onDatabaseStatusChanged,
   onImported,
   onOpenDashboard,
   onRestored,
   onResolve,
 }: {
+  databaseStatus: DatabaseEncryptionStatus;
   pending: PendingItem[];
+  onDatabaseStatusChanged: () => Promise<void>;
   onImported: (summary: Awaited<ReturnType<typeof importWorkbooks>>) => Promise<void>;
   onOpenDashboard: () => void;
   onRestored: () => Promise<void>;
@@ -624,7 +811,9 @@ function MaintenanceView({
 
       <aside className="maintenance-aside">
         <BackupPanel
+          databaseStatus={databaseStatus}
           refreshKey={backupVersion}
+          onDatabaseStatusChanged={onDatabaseStatusChanged}
           onBackupChanged={refreshBackups}
           onDataCleared={onRestored}
           onRestored={onRestored}
@@ -1534,21 +1723,38 @@ function ImportView({
 }
 
 function BackupPanel({
+  databaseStatus,
   refreshKey,
+  onDatabaseStatusChanged,
   onBackupChanged,
   onDataCleared,
   onRestored,
 }: {
+  databaseStatus: DatabaseEncryptionStatus;
   refreshKey: number;
+  onDatabaseStatusChanged: () => Promise<void>;
   onBackupChanged: () => void;
   onDataCleared: () => Promise<void>;
   onRestored: () => Promise<void>;
 }) {
+  const rememberedCloud = useMemo(() => readRememberedCloudBackup(), []);
   const [backups, setBackups] = useState<DataBackupItem[]>([]);
+  const [cloudStatus, setCloudStatus] = useState<CloudBackupStatus | null>(null);
+  const [cloudBackups, setCloudBackups] = useState<CloudBackupItem[]>([]);
   const [selectedBackup, setSelectedBackup] = useState("");
+  const [selectedCloudBackup, setSelectedCloudBackup] = useState("");
   const [backupLoading, setBackupLoading] = useState(false);
+  const [cloudLoading, setCloudLoading] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
+  const [cloudMessage, setCloudMessage] = useState("");
   const [showBackups, setShowBackups] = useState(false);
+  const [showCloudConnect, setShowCloudConnect] = useState(false);
+  const [showCloudPasswordHelp, setShowCloudPasswordHelp] = useState(false);
+  const [cloudBaseUrl, setCloudBaseUrl] = useState(rememberedCloud?.baseUrl || DEFAULT_CLOUD_BACKUP_BASE_URL);
+  const [cloudUsername, setCloudUsername] = useState(rememberedCloud?.username || "");
+  const [cloudPassword, setCloudPassword] = useState(rememberedCloud?.password || "");
+  const [cloudRemoteDir, setCloudRemoteDir] = useState(rememberedCloud?.remoteDir || DEFAULT_CLOUD_BACKUP_REMOTE_DIR);
+  const [rememberCloudCredentials, setRememberCloudCredentials] = useState(Boolean(rememberedCloud));
 
   async function refreshBackups() {
     const result = await listBackups();
@@ -1560,131 +1766,419 @@ function BackupPanel({
     );
   }
 
+  async function refreshCloud() {
+    const status = await getCloudBackupStatus();
+    setCloudStatus(status);
+    if (status.configured || status.connected) {
+      setCloudBaseUrl(status.baseUrl || rememberedCloud?.baseUrl || DEFAULT_CLOUD_BACKUP_BASE_URL);
+      setCloudUsername(status.username || rememberedCloud?.username || "");
+      setCloudRemoteDir(status.remoteDir || rememberedCloud?.remoteDir || DEFAULT_CLOUD_BACKUP_REMOTE_DIR);
+    }
+    if (status.connected) {
+      const result = await listCloudBackups();
+      setCloudBackups(result.items);
+      setSelectedCloudBackup((current) =>
+        result.items.some((item) => item.fileName === current)
+          ? current
+          : result.items[0]?.fileName || "",
+      );
+    } else {
+      setCloudBackups([]);
+      setSelectedCloudBackup("");
+    }
+  }
+
   useEffect(() => {
     refreshBackups().catch((error: unknown) => setBackupMessage(String(error)));
   }, [refreshKey]);
 
+  useEffect(() => {
+    refreshCloud().catch((error: unknown) => setCloudMessage(String(error)));
+  }, [databaseStatus.encrypted, databaseStatus.unlocked]);
+
   return (
-    <section className="backup-panel">
-      <h3>常用维护</h3>
-      <div className="backup-actions">
-        <article className="backup-action-card">
-          <div>
-            <b>备份当前数据</b>
-            <span>导入前会自动备份。</span>
-          </div>
-          <button
-            className="ghost"
-            disabled={backupLoading}
-            onClick={async () => {
-              setBackupLoading(true);
-              try {
-                await createBackup("manual");
-                setBackupMessage("已备份");
+    <>
+      <section className="backup-panel">
+        <h3>常用维护</h3>
+        <div className="backup-actions">
+          <article className="backup-action-card">
+            <div>
+              <b>备份当前数据</b>
+              <span>导入前会自动备份。</span>
+            </div>
+            <button
+              className="ghost"
+              disabled={backupLoading}
+              onClick={async () => {
+                setBackupLoading(true);
+                try {
+                  await createBackup("manual");
+                  setBackupMessage("已备份");
+                  await refreshBackups();
+                  onBackupChanged();
+                } finally {
+                  setBackupLoading(false);
+                }
+              }}
+            >
+              {backupLoading ? "处理中" : "备份"}
+            </button>
+          </article>
+          <article className="backup-action-card">
+            <div>
+              <b>恢复旧备份</b>
+              <span>恢复前会再次确认。</span>
+            </div>
+            <button
+              className="ghost"
+              disabled={backupLoading || backups.length === 0}
+              onClick={async () => {
+                const backupToRestore = selectedBackup || backups[0]?.fileName;
+                if (!backupToRestore || !window.confirm("恢复后会覆盖当前数据，继续？")) return;
+                setBackupLoading(true);
+                try {
+                  await restoreBackup(backupToRestore);
+                  setBackupMessage("已恢复");
+                  await refreshBackups();
+                  await onRestored();
+                } finally {
+                  setBackupLoading(false);
+                }
+              }}
+            >
+              恢复
+            </button>
+          </article>
+          <article className="backup-action-card">
+            <div>
+              <b>查看导入记录</b>
+              <span>{backups[0] ? backupOptionLabel(backups[0]) : "还没有备份"}</span>
+            </div>
+            <button
+              className="ghost"
+              onClick={async () => {
                 await refreshBackups();
-                onBackupChanged();
-              } finally {
-                setBackupLoading(false);
-              }
-            }}
-          >
-            {backupLoading ? "处理中" : "备份"}
-          </button>
-        </article>
-        <article className="backup-action-card">
-          <div>
-            <b>恢复旧备份</b>
-            <span>恢复前会再次确认。</span>
+                setShowBackups((current) => !current);
+              }}
+              disabled={backupLoading}
+            >
+              {showBackups ? "收起" : "查看"}
+            </button>
+          </article>
+          <article className="backup-action-card danger">
+            <div>
+              <b>清空数据</b>
+              <span>会先自动备份。</span>
+            </div>
+            <button
+              className="danger-action"
+              disabled={backupLoading}
+              onClick={async () => {
+                if (!window.confirm("将清空客户、保单、提醒和待确认。清空前会自动备份，继续？")) {
+                  return;
+                }
+                const confirmation = window.prompt("二次确认：请输入“清空数据”");
+                if (confirmation !== "清空数据") {
+                  setBackupMessage("已取消清空");
+                  return;
+                }
+                setBackupLoading(true);
+                try {
+                  const result = await clearLocalData(confirmation);
+                  setBackupMessage(`已清空，已备份：${result.backup.fileName}`);
+                  await refreshBackups();
+                  onBackupChanged();
+                  await onDataCleared();
+                } finally {
+                  setBackupLoading(false);
+                }
+              }}
+            >
+              清空
+            </button>
+          </article>
+        </div>
+        {showBackups && (
+          <div className="backup-history" aria-label="最近备份">
+            {backups.length === 0 ? (
+              <p>还没有备份记录。</p>
+            ) : (
+              backups.slice(0, 6).map((item) => (
+                <button
+                  key={item.fileName}
+                  type="button"
+                  className={item.fileName === selectedBackup ? "active" : ""}
+                  onClick={() => setSelectedBackup(item.fileName)}
+                >
+                  {backupOptionLabel(item)}
+                </button>
+              ))
+            )}
           </div>
-          <button
-            className="ghost"
-            disabled={backupLoading || backups.length === 0}
-            onClick={async () => {
-              const backupToRestore = selectedBackup || backups[0]?.fileName;
-              if (!backupToRestore || !window.confirm("恢复后会覆盖当前数据，继续？")) return;
-              setBackupLoading(true);
-              try {
-                await restoreBackup(backupToRestore);
-                setBackupMessage("已恢复");
-                await refreshBackups();
-                await onRestored();
-              } finally {
-                setBackupLoading(false);
-              }
-            }}
-          >
-            恢复
-          </button>
-        </article>
-        <article className="backup-action-card">
-          <div>
-            <b>查看导入记录</b>
-            <span>{backups[0] ? backupOptionLabel(backups[0]) : "还没有备份"}</span>
-          </div>
-          <button
-            className="ghost"
-            onClick={async () => {
-              await refreshBackups();
-              setShowBackups((current) => !current);
-            }}
-            disabled={backupLoading}
-          >
-            {showBackups ? "收起" : "查看"}
-          </button>
-        </article>
-        <article className="backup-action-card danger">
-          <div>
-            <b>清空数据</b>
-            <span>会先自动备份。</span>
-          </div>
-          <button
-            className="danger-action"
-            disabled={backupLoading}
-            onClick={async () => {
-              if (!window.confirm("将清空客户、保单、提醒和待确认。清空前会自动备份，继续？")) {
-                return;
-              }
-              const confirmation = window.prompt("二次确认：请输入“清空数据”");
-              if (confirmation !== "清空数据") {
-                setBackupMessage("已取消清空");
-                return;
-              }
-              setBackupLoading(true);
-              try {
-                const result = await clearLocalData(confirmation);
-                setBackupMessage(`已清空，已备份：${result.backup.fileName}`);
-                await refreshBackups();
-                onBackupChanged();
-                await onDataCleared();
-              } finally {
-                setBackupLoading(false);
-              }
-            }}
-          >
-            清空
-          </button>
-        </article>
-      </div>
-      {showBackups && (
-        <div className="backup-history" aria-label="最近备份">
-          {backups.length === 0 ? (
-            <p>还没有备份记录。</p>
-          ) : (
-            backups.slice(0, 6).map((item) => (
-              <button
-                key={item.fileName}
-                type="button"
-                className={item.fileName === selectedBackup ? "active" : ""}
-                onClick={() => setSelectedBackup(item.fileName)}
-              >
-                {backupOptionLabel(item)}
+        )}
+        {backupMessage && <p className="backup-message">{backupMessage}</p>}
+      </section>
+
+      <section className="cloud-backup-panel">
+        <h3>云备份</h3>
+        <p>额外保存一份加密备份，不影响本机使用。</p>
+        {!databaseStatus.encrypted ? (
+          <article className="backup-action-card status-warn">
+            <div>
+              <b>先保护数据</b>
+              <span>启用后才能备份到云端。</span>
+            </div>
+            <button
+              className="ghost"
+              onClick={async () => {
+                const password = window.prompt("设置数据密码，至少 8 位");
+                if (!password) return;
+                setCloudLoading(true);
+                try {
+                  await enableDatabaseEncryption(password);
+                  await onDatabaseStatusChanged();
+                  setCloudMessage("数据已保护");
+                } finally {
+                  setCloudLoading(false);
+                }
+              }}
+              disabled={cloudLoading}
+            >
+              启用
+            </button>
+          </article>
+        ) : (
+          <>
+            <article className={cloudStatus?.connected ? "cloud-status" : "cloud-status status-warn"}>
+              <div>
+                <b>{cloudStatus?.connected ? "坚果云已连接" : "坚果云未连接"}</b>
+                <span>
+                  {cloudBackups[0]
+                    ? `上次备份：${cloudBackupLabel(cloudBackups[0])}`
+                    : cloudStatus?.connected
+                      ? "还没有云备份"
+                      : cloudStatus?.configured
+                        ? "重新输入应用密码后可备份。"
+                        : "连接后可上传加密备份。"}
+                </span>
+              </div>
+              <button className="ghost" onClick={() => setShowCloudConnect((current) => !current)}>
+                {cloudStatus?.connected ? "设置" : "连接"}
               </button>
-            ))
-          )}
+            </article>
+            {showCloudConnect && (
+              <form
+                className="cloud-connect-form"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  setCloudLoading(true);
+                  setCloudMessage("");
+                  try {
+                    await connectCloudBackup({
+                      baseUrl: cloudBaseUrl,
+                      username: cloudUsername,
+                      password: cloudPassword,
+                      remoteDir: cloudRemoteDir,
+                    });
+                    if (rememberCloudCredentials) {
+                      writeRememberedCloudBackup({
+                        baseUrl: cloudBaseUrl,
+                        username: cloudUsername,
+                        password: cloudPassword,
+                        remoteDir: cloudRemoteDir,
+                      });
+                    } else {
+                      clearRememberedCloudBackup();
+                      setCloudPassword("");
+                    }
+                    setShowCloudConnect(false);
+                    setCloudMessage("坚果云已连接");
+                    await refreshCloud();
+                  } catch (error) {
+                    setCloudMessage(cloudConnectErrorMessage(error));
+                  } finally {
+                    setCloudLoading(false);
+                  }
+                }}
+              >
+                <input
+                  value={cloudBaseUrl}
+                  onChange={(event) => setCloudBaseUrl(event.target.value)}
+                  aria-label="坚果云地址"
+                  placeholder="坚果云 WebDAV 地址"
+                />
+                <input
+                  value={cloudUsername}
+                  onChange={(event) => setCloudUsername(event.target.value)}
+                  aria-label="坚果云账号"
+                  placeholder="坚果云账号"
+                  autoComplete="username"
+                />
+                <div className="cloud-password-row">
+                  <input
+                    value={cloudPassword}
+                    onChange={(event) => setCloudPassword(event.target.value)}
+                    aria-label="坚果云应用密码"
+                    placeholder={rememberCloudCredentials ? "第三方应用密码" : "第三方应用密码，不保存"}
+                    type="password"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    className="cloud-help-button"
+                    type="button"
+                    onClick={() => setShowCloudPasswordHelp(true)}
+                  >
+                    怎么获取？
+                  </button>
+                </div>
+                <input
+                  value={cloudRemoteDir}
+                  onChange={(event) => setCloudRemoteDir(event.target.value)}
+                  aria-label="云备份目录"
+                  placeholder="备份目录"
+                />
+                <label className="checkbox cloud-remember">
+                  <input
+                    type="checkbox"
+                    checked={rememberCloudCredentials}
+                    onChange={(event) => {
+                      setRememberCloudCredentials(event.target.checked);
+                      if (!event.target.checked) {
+                        clearRememberedCloudBackup();
+                      }
+                    }}
+                  />
+                  <span>记住在本机浏览器</span>
+                </label>
+                <button className="primary" disabled={cloudLoading || !cloudUsername.trim() || !cloudPassword.trim()}>
+                  {cloudLoading ? "连接中" : rememberCloudCredentials ? "连接并记住" : "连接本次"}
+                </button>
+              </form>
+            )}
+            <div className="cloud-actions">
+              <button
+                className="primary"
+                disabled={cloudLoading || !cloudStatus?.connected}
+                onClick={async () => {
+                  setCloudLoading(true);
+                  setCloudMessage("");
+                  try {
+                    await createCloudBackup();
+                    setCloudMessage("已备份到云端");
+                    await refreshCloud();
+                  } finally {
+                    setCloudLoading(false);
+                  }
+                }}
+              >
+                {cloudLoading ? "处理中" : "备份到云端"}
+              </button>
+              <button
+                className="ghost"
+                disabled={cloudLoading || !selectedCloudBackup}
+                onClick={async () => {
+                  if (!selectedCloudBackup || !window.confirm("从云端恢复会覆盖当前数据，继续？")) {
+                    return;
+                  }
+                  setCloudLoading(true);
+                  setCloudMessage("");
+                  try {
+                    await restoreCloudBackup(selectedCloudBackup);
+                    setCloudMessage("已从云端恢复");
+                    await refreshBackups();
+                    await onRestored();
+                  } finally {
+                    setCloudLoading(false);
+                  }
+                }}
+              >
+                从云端恢复
+              </button>
+            </div>
+            {cloudBackups.length > 0 && (
+              <div className="cloud-history" aria-label="最近云备份">
+                <p>最近云备份</p>
+                {cloudBackups.slice(0, 4).map((item) => (
+                  <button
+                    key={item.fileName}
+                    type="button"
+                    className={item.fileName === selectedCloudBackup ? "active" : ""}
+                    onClick={() => setSelectedCloudBackup(item.fileName)}
+                  >
+                    {cloudBackupLabel(item)}
+                  </button>
+                ))}
+              </div>
+            )}
+            <details className="cloud-advanced">
+              <summary>高级设置</summary>
+              <button
+                className="ghost"
+                type="button"
+                onClick={async () => {
+                  const currentPassword = window.prompt("输入当前数据密码");
+                  if (!currentPassword) return;
+                  const nextPassword = window.prompt("输入新的数据密码，至少 8 位");
+                  if (!nextPassword) return;
+                  setCloudMessage("");
+                  try {
+                    await changeDatabasePassword(currentPassword, nextPassword);
+                    await onDatabaseStatusChanged();
+                    setCloudMessage("数据密码已修改");
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    setCloudMessage(
+                      message.includes("database_current_password_invalid") ||
+                        message.includes("database_password_invalid")
+                        ? "当前数据密码不正确，未修改"
+                        : "数据密码修改失败",
+                    );
+                  }
+                }}
+              >
+                修改数据密码
+              </button>
+            </details>
+          </>
+        )}
+        {cloudMessage && <p className="backup-message">{cloudMessage}</p>}
+      </section>
+      {showCloudPasswordHelp && (
+        <div className="todo-dialog-backdrop" role="presentation" onClick={() => setShowCloudPasswordHelp(false)}>
+          <section
+            className="todo-dialog cloud-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cloud-password-help-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="todo-dialog-head">
+              <div>
+                <span className="eyebrow">坚果云</span>
+                <h3 id="cloud-password-help-title">获取 WebDAV 应用密码</h3>
+              </div>
+              <button className="icon-button" onClick={() => setShowCloudPasswordHelp(false)} aria-label="关闭">
+                ×
+              </button>
+            </div>
+            <p className="cloud-password-intro">
+              这里填的不是官网登录密码，而是坚果云的第三方应用密码。
+            </p>
+            <ol className="cloud-password-steps">
+              <li>登录坚果云官网。</li>
+              <li>进入账户信息，打开安全选项。</li>
+              <li>找到第三方应用管理或应用密码。</li>
+              <li>新建应用密码，名称可填客户提醒备份。</li>
+              <li>复制生成出来的那串密码。</li>
+              <li>回到这里，账号填坚果云邮箱，密码填刚生成的应用密码。</li>
+            </ol>
+            <p className="cloud-password-note">
+              地址保持 https://dav.jianguoyun.com/dav/。
+            </p>
+          </section>
         </div>
       )}
-      {backupMessage && <p className="backup-message">{backupMessage}</p>}
-    </section>
+    </>
   );
 }
 

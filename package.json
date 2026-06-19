@@ -1,7 +1,7 @@
 {
   "name": "ai-baoguwen",
   "version": "0.1.0",
-  "description": "本地优先的保险客户工作日历，支持生日、续期、待办和飞书同步。",
+  "description": "本地优先的保险客户工作日历，支持生日、续期、待办、数据库加密、云备份和飞书同步。",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -22,6 +22,7 @@
     "@fullcalendar/list": "^6.1.20",
     "@fullcalendar/react": "^6.1.20",
     "better-sqlite3": "^12.11.1",
+    "better-sqlite3-multiple-ciphers": "^12.11.1",
     "fastify": "^5.8.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

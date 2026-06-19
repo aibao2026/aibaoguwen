@@ -1,11 +1,25 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import Fastify from "fastify";
 import { publicAiSettings, resolveSavedApiKey, writeLocalAiSettings } from "../ai/localAiSettings";
 import type { AiProviderId } from "../ai/modelProviders";
+import {
+  downloadWebDavFile,
+  listWebDavFiles,
+  testWebDavConnection,
+  uploadWebDavFile,
+  type WebDavConfig,
+} from "../cloud/webdav";
 import { openDatabase } from "../db/connection";
+import {
+  changeDatabasePassword,
+  enableDatabaseEncryption,
+  getDatabaseEncryptionStatus,
+  replaceEncryptedDatabase,
+  unlockDatabase,
+} from "../db/encryption";
 import { runMigrations } from "../db/migrations";
 import { CustomerRepository } from "../db/repositories/customerRepository";
 import { PendingChangeRepository } from "../db/repositories/pendingChangeRepository";
@@ -75,6 +89,26 @@ interface DataRestoreRequestBody {
 
 interface ClearLocalDataRequestBody {
   confirm?: string;
+}
+
+interface DatabasePasswordRequestBody {
+  password?: string;
+}
+
+interface DatabasePasswordChangeRequestBody {
+  currentPassword?: string;
+  nextPassword?: string;
+}
+
+interface CloudBackupConnectRequestBody {
+  baseUrl?: string;
+  username?: string;
+  password?: string;
+  remoteDir?: string;
+}
+
+interface CloudBackupRestoreRequestBody {
+  fileName?: string;
 }
 
 interface FeishuBaseSyncRequestBody {
@@ -342,6 +376,99 @@ function resolveBackupPath(dbPath: string, fileName: string): string | undefined
     return undefined;
   }
   return existsSync(candidate) ? candidate : undefined;
+}
+
+const CLOUD_BACKUP_SETTINGS_KEY = "cloud-backup:jianguoyun:settings";
+const cloudBackupSessionPasswords = new Map<string, string>();
+
+interface StoredCloudBackupConfig {
+  baseUrl: string;
+  username: string;
+  remoteDir: string;
+}
+
+function cloudBackupSessionKey(dbPath: string): string {
+  return resolve(dbPath);
+}
+
+function publicCloudConfig(config: StoredCloudBackupConfig | undefined, passwordReady = false) {
+  return {
+    connected: Boolean(config && passwordReady),
+    configured: Boolean(config),
+    provider: "jianguoyun" as const,
+    baseUrl: config?.baseUrl,
+    username: config?.username,
+    remoteDir: config?.remoteDir,
+  };
+}
+
+function readCloudBackupConfig(dbPath: string): StoredCloudBackupConfig | undefined {
+  const db = openDatabase(dbPath);
+  runMigrations(db);
+  try {
+    const row = db
+      .prepare("SELECT value FROM sync_state WHERE key = ?")
+      .get(CLOUD_BACKUP_SETTINGS_KEY) as { value: string } | undefined;
+    if (!row?.value) {
+      return undefined;
+    }
+    const parsed = JSON.parse(row.value) as Partial<WebDavConfig>;
+    if (!parsed.baseUrl || !parsed.username || !parsed.remoteDir) {
+      return undefined;
+    }
+    const sanitized = {
+      baseUrl: parsed.baseUrl,
+      username: parsed.username,
+      remoteDir: parsed.remoteDir,
+    };
+    if ("password" in parsed) {
+      db.prepare("UPDATE sync_state SET value = ? WHERE key = ?").run(
+        JSON.stringify(sanitized),
+        CLOUD_BACKUP_SETTINGS_KEY,
+      );
+    }
+    return sanitized;
+  } finally {
+    db.close();
+  }
+}
+
+function writeCloudBackupConfig(dbPath: string, config: StoredCloudBackupConfig): void {
+  const db = openDatabase(dbPath);
+  runMigrations(db);
+  try {
+    db.prepare(
+      `
+      INSERT INTO sync_state (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `,
+    ).run(CLOUD_BACKUP_SETTINGS_KEY, JSON.stringify(config));
+  } finally {
+    db.close();
+  }
+}
+
+function cloudBackupConfigForUse(dbPath: string): WebDavConfig {
+  const config = readCloudBackupConfig(dbPath);
+  const password = cloudBackupSessionPasswords.get(cloudBackupSessionKey(dbPath));
+  if (!config || !password) {
+    throw new Error("jianguoyun_reconnect_required");
+  }
+  return {
+    ...config,
+    password,
+  };
+}
+
+function requireEncryptedDatabaseForCloudBackup(dbPath: string) {
+  const status = getDatabaseEncryptionStatus(dbPath);
+  if (!status.encrypted) {
+    throw new Error("database_encryption_required");
+  }
+  if (!status.unlocked) {
+    throw new Error("database_locked");
+  }
 }
 
 function cleanOptional(value?: string): string | undefined {
@@ -693,7 +820,12 @@ export function buildServer(options: ServerOptions = {}) {
     if (!auth.enabled || !request.url.startsWith("/api/")) {
       return;
     }
-    if (request.url === "/api/auth/status" || request.url === "/api/auth/login") {
+    if (
+      request.url === "/api/auth/status" ||
+      request.url === "/api/auth/login" ||
+      request.url === "/api/database/encryption" ||
+      request.url === "/api/database/encryption/unlock"
+    ) {
       return;
     }
 
@@ -735,6 +867,43 @@ export function buildServer(options: ServerOptions = {}) {
     reply.header("Set-Cookie", clearSessionCookie());
     return { ok: true };
   });
+
+  app.get("/api/database/encryption", async () => getDatabaseEncryptionStatus(dbPath));
+
+  app.post<{ Body: DatabasePasswordRequestBody }>("/api/database/encryption/unlock", async (request, reply) => {
+    try {
+      return unlockDatabase(dbPath, request.body?.password ?? "");
+    } catch (error) {
+      reply.code(401);
+      return { error: error instanceof Error ? error.message : "database_unlock_failed" };
+    }
+  });
+
+  app.post<{ Body: DatabasePasswordRequestBody }>("/api/database/encryption/enable", async (request, reply) => {
+    try {
+      return enableDatabaseEncryption(dbPath, request.body?.password ?? "");
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : "database_encryption_failed" };
+    }
+  });
+
+  app.post<{ Body: DatabasePasswordChangeRequestBody }>(
+    "/api/database/encryption/change-password",
+    async (request, reply) => {
+      try {
+        return changeDatabasePassword(
+          dbPath,
+          request.body?.currentPassword ?? "",
+          request.body?.nextPassword ?? "",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "database_password_change_failed";
+        reply.code(message === "database_current_password_invalid" ? 401 : 400);
+        return { error: message };
+      }
+    },
+  );
 
   app.get("/api/ai/settings", async () => publicAiSettings(dataRoot));
 
@@ -946,12 +1115,124 @@ export function buildServer(options: ServerOptions = {}) {
       return { error: "backup_not_found" };
     }
     mkdirSync(dirname(dbPath), { recursive: true });
-    copyFileSync(sourcePath, dbPath);
+    if (getDatabaseEncryptionStatus(dbPath).encrypted) {
+      replaceEncryptedDatabase(dbPath, sourcePath);
+    } else {
+      copyFileSync(sourcePath, dbPath);
+    }
     return {
       ok: true,
       restored: basename(sourcePath),
       stats: withRepositories(dbPath, (repos) => buildLocalDataStats(repos)),
     };
+  });
+
+  app.get("/api/cloud-backup/status", async (request, reply) => {
+    try {
+      requireEncryptedDatabaseForCloudBackup(dbPath);
+      const config = readCloudBackupConfig(dbPath);
+      return publicCloudConfig(
+        config,
+        Boolean(cloudBackupSessionPasswords.get(cloudBackupSessionKey(dbPath))),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "cloud_backup_status_failed";
+      if (message === "database_encryption_required" || message === "database_locked") {
+        return {
+          ...publicCloudConfig(undefined),
+          blockedReason: message,
+        };
+      }
+      reply.code(400);
+      return { error: message };
+    }
+  });
+
+  app.post<{ Body: CloudBackupConnectRequestBody }>("/api/cloud-backup/connect", async (request, reply) => {
+    try {
+      requireEncryptedDatabaseForCloudBackup(dbPath);
+      const config: WebDavConfig = {
+        baseUrl: request.body?.baseUrl?.trim() || "https://dav.jianguoyun.com/dav/",
+        username: request.body?.username?.trim() || "",
+        password: request.body?.password?.trim() || "",
+        remoteDir: request.body?.remoteDir?.trim() || "客户提醒备份",
+      };
+      if (!config.username || !config.password) {
+        reply.code(400);
+        return { error: "jianguoyun_credentials_required" };
+      }
+      await testWebDavConnection(config);
+      writeCloudBackupConfig(dbPath, {
+        baseUrl: config.baseUrl,
+        username: config.username,
+        remoteDir: config.remoteDir,
+      });
+      cloudBackupSessionPasswords.set(cloudBackupSessionKey(dbPath), config.password);
+      return publicCloudConfig(config, true);
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : "cloud_backup_connect_failed" };
+    }
+  });
+
+  app.get("/api/cloud-backup/backups", async (request, reply) => {
+    try {
+      requireEncryptedDatabaseForCloudBackup(dbPath);
+      const config = cloudBackupConfigForUse(dbPath);
+      if (!config) {
+        return { items: [] };
+      }
+      return { items: await listWebDavFiles(config) };
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : "cloud_backup_list_failed" };
+    }
+  });
+
+  app.post("/api/cloud-backup/backups", async (request, reply) => {
+    try {
+      requireEncryptedDatabaseForCloudBackup(dbPath);
+      const config = cloudBackupConfigForUse(dbPath);
+      const backup = createDatabaseBackup(dbPath, "cloud");
+      await uploadWebDavFile(config, backup.fileName, readFileSync(backup.filePath));
+      return {
+        ok: true,
+        backup,
+        cloud: {
+          fileName: backup.fileName,
+          sizeBytes: backup.sizeBytes,
+          modifiedAt: backup.modifiedAt,
+        },
+      };
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : "cloud_backup_upload_failed" };
+    }
+  });
+
+  app.post<{ Body: CloudBackupRestoreRequestBody }>("/api/cloud-backup/restore", async (request, reply) => {
+    try {
+      requireEncryptedDatabaseForCloudBackup(dbPath);
+      const config = cloudBackupConfigForUse(dbPath);
+      const fileName = request.body?.fileName?.trim();
+      if (!fileName || fileName !== basename(fileName) || !fileName.endsWith(".sqlite")) {
+        reply.code(400);
+        return { error: "cloud_backup_file_required" };
+      }
+      const beforeRestore = createDatabaseBackup(dbPath, "before-cloud-restore");
+      const downloadPath = backupFilePath(dbPath, "cloud-download");
+      writeFileSync(downloadPath, await downloadWebDavFile(config, fileName));
+      replaceEncryptedDatabase(dbPath, downloadPath);
+      return {
+        ok: true,
+        restored: fileName,
+        backup: beforeRestore,
+        stats: withRepositories(dbPath, (repos) => buildLocalDataStats(repos)),
+      };
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : "cloud_backup_restore_failed" };
+    }
   });
 
   app.post<{ Body: ClearLocalDataRequestBody }>("/api/local-data/clear", async (request, reply) => {

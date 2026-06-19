@@ -117,6 +117,28 @@ export interface DataBackupItem {
   modifiedAt: string;
 }
 
+export interface DatabaseEncryptionStatus {
+  encrypted: boolean;
+  unlocked: boolean;
+  canEnable: boolean;
+}
+
+export interface CloudBackupStatus {
+  connected: boolean;
+  configured?: boolean;
+  provider: "jianguoyun";
+  baseUrl?: string;
+  username?: string;
+  remoteDir?: string;
+  blockedReason?: string;
+}
+
+export interface CloudBackupItem {
+  fileName: string;
+  sizeBytes?: number;
+  modifiedAt?: string;
+}
+
 export interface ImportPreviewResult {
   mode: "preview";
   summary: {
@@ -312,6 +334,31 @@ export function getAuthStatus() {
   return request<{ enabled: boolean; authenticated: boolean }>("/api/auth/status");
 }
 
+export function getDatabaseEncryptionStatus() {
+  return request<DatabaseEncryptionStatus>("/api/database/encryption");
+}
+
+export function unlockDatabase(password: string) {
+  return request<DatabaseEncryptionStatus>("/api/database/encryption/unlock", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function enableDatabaseEncryption(password: string) {
+  return request<DatabaseEncryptionStatus>("/api/database/encryption/enable", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function changeDatabasePassword(currentPassword: string, nextPassword: string) {
+  return request<DatabaseEncryptionStatus>("/api/database/encryption/change-password", {
+    method: "POST",
+    body: JSON.stringify({ currentPassword, nextPassword }),
+  });
+}
+
 export function loginWithPassword(password: string) {
   return request<{ ok: true }>("/api/auth/login", {
     method: "POST",
@@ -415,6 +462,43 @@ export function clearLocalData(confirm: string) {
     method: "POST",
     body: JSON.stringify({ confirm }),
   });
+}
+
+export function getCloudBackupStatus() {
+  return request<CloudBackupStatus>("/api/cloud-backup/status");
+}
+
+export function connectCloudBackup(input: {
+  baseUrl?: string;
+  username: string;
+  password: string;
+  remoteDir?: string;
+}) {
+  return request<CloudBackupStatus>("/api/cloud-backup/connect", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listCloudBackups() {
+  return request<{ items: CloudBackupItem[] }>("/api/cloud-backup/backups");
+}
+
+export function createCloudBackup() {
+  return request<{ ok: true; backup: DataBackupItem; cloud: CloudBackupItem }>("/api/cloud-backup/backups", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function restoreCloudBackup(fileName: string) {
+  return request<{ ok: true; restored: string; backup: DataBackupItem; stats: LocalDataStats }>(
+    "/api/cloud-backup/restore",
+    {
+      method: "POST",
+      body: JSON.stringify({ fileName }),
+    },
+  );
 }
 
 export function getReminderDetail(id: string) {

@@ -2412,6 +2412,11 @@ select {
   border-color: #fed7aa;
 }
 
+.backup-action-card.status-warn {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
 .backup-action-card.danger b {
   color: #9a3412;
 }
@@ -2463,6 +2468,229 @@ select {
   color: #0f766e;
   background: #f0fdfa;
   border-color: #5eead4;
+}
+
+.cloud-backup-panel {
+  display: grid;
+  gap: 10px;
+  max-width: none;
+  margin: 12px 0 0;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #dce6ee;
+  border-radius: 8px;
+}
+
+.cloud-backup-panel h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+}
+
+.cloud-backup-panel > p {
+  margin: -4px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.cloud-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+}
+
+.cloud-status.status-warn {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
+.cloud-status b,
+.cloud-status span {
+  display: block;
+}
+
+.cloud-status b {
+  color: #17202f;
+  font-size: 14px;
+}
+
+.cloud-status span {
+  margin-top: 3px;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.cloud-status.status-warn span {
+  color: #92400e;
+}
+
+.cloud-connect-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: #fff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+}
+
+.cloud-connect-form input {
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  color: #17202f;
+  background: #f8fafc;
+  border: 1px solid #dbe5ed;
+  border-radius: 8px;
+}
+
+.cloud-password-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.cloud-help-button {
+  min-width: 82px;
+  height: 36px;
+  padding: 0 10px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+  background: #ecfdf5;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+}
+
+.cloud-remember {
+  min-width: 0;
+  padding: 2px 1px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.cloud-remember span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.cloud-actions button {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.cloud-history {
+  display: grid;
+  gap: 7px;
+}
+
+.cloud-history p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.cloud-history button {
+  width: 100%;
+  padding: 8px 10px;
+  overflow: hidden;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.cloud-history button.active {
+  color: #0f766e;
+  background: #f0fdfa;
+  border-color: #5eead4;
+}
+
+.cloud-advanced {
+  padding: 9px 10px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.cloud-advanced summary {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.cloud-advanced .ghost {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.cloud-password-dialog {
+  width: min(520px, 100%);
+}
+
+.cloud-password-intro {
+  padding: 12px;
+  margin: 0 0 12px;
+  color: #17202f;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.5;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+}
+
+.cloud-password-steps {
+  display: grid;
+  gap: 8px;
+  padding-left: 22px;
+  margin: 0;
+}
+
+.cloud-password-steps li {
+  color: #334155;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.cloud-password-note {
+  padding: 10px 12px;
+  margin: 14px 0 0;
+  color: #92400e;
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1.45;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
 }
 
 .agent-sync-guide {
