@@ -60,14 +60,7 @@ const panelEyebrows: Record<Exclude<Tab, "dashboard">, string> = {
 function BrandMark() {
   return (
     <span className="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 32 32" focusable="false">
-        <path d="M8 16a8 8 0 0 1 13.7-5.7" />
-        <path d="M24 16a8 8 0 0 1-13.7 5.7" />
-        <path d="M22 7v5h-5" />
-        <path d="M10 25v-5h5" />
-        <path d="M13 14h6" />
-        <path d="M13 18h6" />
-      </svg>
+      <img src="/brand/logo.png" alt="" />
     </span>
   );
 }

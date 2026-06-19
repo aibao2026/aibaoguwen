@@ -117,16 +117,11 @@ button {
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
 }
 
-.brand-mark svg {
+.brand-mark img {
   display: block;
-  width: 70%;
-  height: 70%;
-  color: #2563eb;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  width: 82%;
+  height: 82%;
+  object-fit: contain;
 }
 
 .brand h1 {
