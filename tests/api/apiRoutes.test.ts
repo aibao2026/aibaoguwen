@@ -2,7 +2,8 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import Database from "better-sqlite3-multiple-ciphers";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../../src/api/server";
 import { openDatabase } from "../../src/db/connection";
 import { runMigrations } from "../../src/db/migrations";
@@ -24,6 +25,245 @@ afterEach(async () => {
 });
 
 describe("api routes", () => {
+  it("enables database encryption and blocks plaintext reads", async () => {
+    const dbPath = tempDbPath();
+    const app = buildServer({ dbPath, today: "2026-06-17" });
+
+    const beforeStatus = await app.inject({
+      method: "GET",
+      url: "/api/database/encryption",
+    });
+    expect(beforeStatus.statusCode).toBe(200);
+    expect(beforeStatus.json()).toMatchObject({ encrypted: false, unlocked: true });
+
+    const enableResponse = await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/enable",
+      payload: { password: "local-data-secret" },
+    });
+    expect(enableResponse.statusCode).toBe(200);
+    expect(enableResponse.json()).toMatchObject({ encrypted: true, unlocked: true });
+
+    const plainDb = new Database(dbPath);
+    expect(() => plainDb.prepare("SELECT name FROM sqlite_master LIMIT 1").get()).toThrow();
+    plainDb.close();
+
+    const statsResponse = await app.inject({
+      method: "GET",
+      url: "/api/stats",
+    });
+    expect(statsResponse.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("unlocks an existing encrypted database before serving data", async () => {
+    const dbPath = tempDbPath();
+    const encryptedDb = new Database(dbPath);
+    encryptedDb.prepare("CREATE TABLE sample (id INTEGER PRIMARY KEY)").run();
+    encryptedDb.rekey(Buffer.from("existing-data-secret"));
+    encryptedDb.close();
+
+    const app = buildServer({ dbPath, today: "2026-06-17" });
+    const lockedStatus = await app.inject({
+      method: "GET",
+      url: "/api/database/encryption",
+    });
+    expect(lockedStatus.statusCode).toBe(200);
+    expect(lockedStatus.json()).toMatchObject({ encrypted: true, unlocked: false });
+
+    const badUnlock = await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/unlock",
+      payload: { password: "wrong-secret" },
+    });
+    expect(badUnlock.statusCode).toBe(401);
+
+    const unlock = await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/unlock",
+      payload: { password: "existing-data-secret" },
+    });
+    expect(unlock.statusCode).toBe(200);
+    expect(unlock.json()).toMatchObject({ encrypted: true, unlocked: true });
+
+    const remindersResponse = await app.inject({
+      method: "GET",
+      url: "/api/reminders",
+    });
+    expect(remindersResponse.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("rejects database password changes when the current password is wrong", async () => {
+    const dbPath = tempDbPath();
+    const app = buildServer({ dbPath, today: "2026-06-17" });
+
+    const enableResponse = await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/enable",
+      payload: { password: "original-data-secret" },
+    });
+    expect(enableResponse.statusCode).toBe(200);
+
+    const changeResponse = await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/change-password",
+      payload: {
+        currentPassword: "wrong-data-secret",
+        nextPassword: "next-data-secret",
+      },
+    });
+    expect(changeResponse.statusCode).toBe(401);
+
+    const oldPasswordDb = new Database(dbPath, { fileMustExist: true });
+    oldPasswordDb.key(Buffer.from("original-data-secret"));
+    expect(oldPasswordDb.prepare("SELECT count(*) AS count FROM sqlite_master").get()).toEqual({ count: 0 });
+    oldPasswordDb.close();
+
+    const nextPasswordDb = new Database(dbPath, { fileMustExist: true });
+    nextPasswordDb.key(Buffer.from("next-data-secret"));
+    expect(() => nextPasswordDb.prepare("SELECT count(*) AS count FROM sqlite_master").get()).toThrow();
+    nextPasswordDb.close();
+    await app.close();
+  });
+
+  it("changes the database password only when the current password is valid", async () => {
+    const dbPath = tempDbPath();
+    const app = buildServer({ dbPath, today: "2026-06-17" });
+
+    const enableResponse = await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/enable",
+      payload: { password: "original-data-secret" },
+    });
+    expect(enableResponse.statusCode).toBe(200);
+
+    const changeResponse = await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/change-password",
+      payload: {
+        currentPassword: "original-data-secret",
+        nextPassword: "next-data-secret",
+      },
+    });
+    expect(changeResponse.statusCode).toBe(200);
+    expect(changeResponse.json()).toMatchObject({ encrypted: true, unlocked: true });
+
+    const oldPasswordDb = new Database(dbPath, { fileMustExist: true });
+    oldPasswordDb.key(Buffer.from("original-data-secret"));
+    expect(() => oldPasswordDb.prepare("SELECT count(*) AS count FROM sqlite_master").get()).toThrow();
+    oldPasswordDb.close();
+
+    const nextPasswordDb = new Database(dbPath, { fileMustExist: true });
+    nextPasswordDb.key(Buffer.from("next-data-secret"));
+    expect(nextPasswordDb.prepare("SELECT count(*) AS count FROM sqlite_master").get()).toEqual({ count: 0 });
+    nextPasswordDb.close();
+    await app.close();
+  });
+
+  it("blocks cloud backup until the database is encrypted", async () => {
+    const app = buildServer({ dbPath: tempDbPath(), today: "2026-06-17" });
+
+    const statusResponse = await app.inject({
+      method: "GET",
+      url: "/api/cloud-backup/status",
+    });
+    expect(statusResponse.statusCode).toBe(200);
+    expect(statusResponse.json()).toMatchObject({
+      connected: false,
+      blockedReason: "database_encryption_required",
+    });
+
+    const connectResponse = await app.inject({
+      method: "POST",
+      url: "/api/cloud-backup/connect",
+      payload: {
+        username: "user@example.com",
+        password: "app-password",
+      },
+    });
+    expect(connectResponse.statusCode).toBe(400);
+    expect(connectResponse.json()).toEqual({ error: "database_encryption_required" });
+    await app.close();
+  });
+
+  it("keeps Jianguoyun app password out of persisted cloud backup settings", async () => {
+    const dbPath = tempDbPath();
+    const app = buildServer({ dbPath, today: "2026-06-17" });
+    await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/enable",
+      payload: { password: "local-data-secret" },
+    });
+
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 207 })),
+    );
+    try {
+      const connectResponse = await app.inject({
+        method: "POST",
+        url: "/api/cloud-backup/connect",
+        payload: {
+          baseUrl: "https://dav.jianguoyun.com/dav/",
+          username: "user@example.com",
+          password: "app-password-should-not-persist",
+          remoteDir: "客户提醒备份",
+        },
+      });
+      expect(connectResponse.statusCode).toBe(200);
+      expect(connectResponse.json()).toMatchObject({
+        connected: true,
+        configured: true,
+        username: "user@example.com",
+        remoteDir: "客户提醒备份",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      globalThis.fetch = originalFetch;
+    }
+
+    const db = openDatabase(dbPath);
+    const row = db
+      .prepare("SELECT value FROM sync_state WHERE key = ?")
+      .get("cloud-backup:jianguoyun:settings") as { value: string };
+    db.close();
+    expect(row.value).toContain("user@example.com");
+    expect(row.value).not.toContain("app-password-should-not-persist");
+    expect(JSON.parse(row.value)).not.toHaveProperty("password");
+    await app.close();
+  });
+
+  it("returns a specific error when Jianguoyun rejects WebDAV credentials", async () => {
+    const dbPath = tempDbPath();
+    const app = buildServer({ dbPath, today: "2026-06-17" });
+    await app.inject({
+      method: "POST",
+      url: "/api/database/encryption/enable",
+      payload: { password: "local-data-secret" },
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
+    try {
+      const connectResponse = await app.inject({
+        method: "POST",
+        url: "/api/cloud-backup/connect",
+        payload: {
+          baseUrl: "https://dav.jianguoyun.com/dav/",
+          username: "user@example.com",
+          password: "wrong-app-password",
+          remoteDir: "客户提醒备份",
+        },
+      });
+      expect(connectResponse.statusCode).toBe(400);
+      expect(connectResponse.json()).toEqual({ error: "jianguoyun_credentials_invalid" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    await app.close();
+  });
+
   it("keeps auth disabled unless an access password is configured", async () => {
     const app = buildServer({ dbPath: tempDbPath(), today: "2026-06-17" });
 
@@ -492,14 +732,14 @@ describe("api routes", () => {
     const db = openDatabase(dbPath);
     runMigrations(db);
     const reminderId =
-      "reminder:policy_renewal:2026-06-11:unknown:policy:00118769447708088:何小行:" +
-      "天安人寿健康源2号增强版两全保险+附加健康源2号增强版终身重大疾病保险:" +
-      "续期提醒：何小行";
+      "reminder:policy_renewal:2026-06-11:unknown:policy:synthetic-long-policy-id:测试客户长ID:" +
+      "测试长期险产品组合A+附加测试长期险产品组合B:" +
+      "续期提醒：测试客户长ID";
     expect(reminderId.length).toBeGreaterThan(100);
     new ReminderRepository(db).upsertGenerated({
       id: reminderId,
       group: "policy_renewal",
-      title: "续期提醒：何小行",
+      title: "续期提醒：测试客户长ID",
       reminderDate: "2026-06-11",
       status: "pending",
       isKey: false,

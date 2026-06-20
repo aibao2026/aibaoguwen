@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>额外云备份预览</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      :root {
+        color: #17202f;
+        background: #eef3f7;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        background:
+          linear-gradient(180deg, rgba(15, 118, 110, 0.08), transparent 360px),
+          #eef3f7;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: 84px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        padding: 20px 12px;
+        color: #ecfeff;
+        background: #12202f;
+        border-right: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .brand {
+        display: grid;
+        gap: 8px;
+        justify-items: center;
+        margin-bottom: 24px;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 48px;
+        height: 48px;
+        place-items: center;
+        color: #2563eb;
+        font-size: 24px;
+        font-weight: 900;
+        background: #fff;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 10px;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.2;
+        text-align: center;
+      }
+
+      .nav {
+        display: grid;
+        gap: 10px;
+      }
+
+      .nav button {
+        position: relative;
+        display: grid;
+        width: 100%;
+        min-height: 68px;
+        gap: 6px;
+        padding: 8px 4px;
+        place-items: center;
+        color: #d7e4ee;
+        text-align: center;
+        background: transparent;
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 8px;
+      }
+
+      .nav button.active {
+        color: #fff;
+        background: rgba(20, 184, 166, 0.18);
+        border-color: rgba(153, 246, 228, 0.42);
+      }
+
+      .nav button.active::before {
+        position: absolute;
+        left: -12px;
+        width: 4px;
+        height: 36px;
+        content: "";
+        background: #5eead4;
+        border-radius: 0 999px 999px 0;
+      }
+
+      .nav-icon {
+        display: grid;
+        width: 40px;
+        height: 40px;
+        place-items: center;
+        font-size: 20px;
+        line-height: 1;
+        color: #d7e4ee;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+      }
+
+      .nav button.active .nav-icon {
+        color: #042f2e;
+        background: #99f6e4;
+      }
+
+      .nav b {
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      .content {
+        padding: 28px 24px 48px;
+      }
+
+      .panel-page {
+        display: grid;
+        gap: 18px;
+      }
+
+      .page-heading span {
+        display: block;
+        margin-bottom: 4px;
+        color: #0f766e;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .page-heading h2 {
+        margin: 0;
+        color: #17202f;
+        font-size: 26px;
+        letter-spacing: 0;
+      }
+
+      .maintenance-page {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 360px;
+        gap: 18px;
+        align-items: start;
+      }
+
+      .maintenance-main {
+        display: grid;
+        gap: 14px;
+      }
+
+      .maintenance-section,
+      .backup-panel {
+        background: #fff;
+        border: 1px solid #dce6ee;
+        border-radius: 8px;
+        box-shadow: 0 14px 40px rgba(15, 23, 42, 0.06);
+      }
+
+      .maintenance-section {
+        padding: 16px;
+      }
+
+      .maintenance-head {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .maintenance-head > div {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .maintenance-head span {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        color: #0f766e;
+        font-size: 13px;
+        font-weight: 900;
+        background: #ccfbf1;
+        border-radius: 999px;
+      }
+
+      .maintenance-head h3 {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .maintenance-head p {
+        margin: 3px 0 0;
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .maintenance-head strong {
+        color: #0f766e;
+        font-size: 13px;
+      }
+
+      .placeholder-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .placeholder-grid div,
+      .pending-row {
+        min-height: 70px;
+        padding: 12px;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+      }
+
+      .placeholder-grid b,
+      .pending-row b {
+        display: block;
+        color: #17202f;
+        font-size: 14px;
+      }
+
+      .placeholder-grid span,
+      .pending-row span {
+        display: block;
+        margin-top: 6px;
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .pending-row {
+        margin-top: 14px;
+      }
+
+      .maintenance-aside {
+        position: sticky;
+        top: 24px;
+      }
+
+      .backup-panel {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+      }
+
+      .cloud-panel {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+        padding: 12px;
+        background: #fff;
+        border: 1px solid #dce6ee;
+        border-radius: 8px;
+        box-shadow: 0 14px 40px rgba(15, 23, 42, 0.06);
+      }
+
+      .backup-panel h3,
+      .cloud-panel h3 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .backup-note,
+      .cloud-note {
+        margin: -4px 0 0;
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.45;
+      }
+
+      .backup-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+
+      .backup-action-card {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+      }
+
+      .backup-action-card b,
+      .backup-action-card span {
+        display: block;
+      }
+
+      .backup-action-card b {
+        color: #17202f;
+        font-size: 14px;
+      }
+
+      .backup-action-card span {
+        margin-top: 3px;
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 800;
+        line-height: 1.35;
+      }
+
+      .backup-action-card.status-ok {
+        background: #f0fdfa;
+        border-color: #99f6e4;
+      }
+
+      .backup-action-card.status-warn {
+        background: #fffbeb;
+        border-color: #fcd34d;
+      }
+
+      .cloud-status {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px;
+        background: #f0fdfa;
+        border: 1px solid #99f6e4;
+        border-radius: 8px;
+      }
+
+      .cloud-status b,
+      .cloud-status span {
+        display: block;
+      }
+
+      .cloud-status b {
+        font-size: 14px;
+      }
+
+      .cloud-status span {
+        margin-top: 3px;
+        color: #0f766e;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .cloud-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .cloud-actions button {
+        min-height: 36px;
+      }
+
+      .ghost,
+      .primary {
+        min-height: 34px;
+        padding: 0 10px;
+        font-size: 13px;
+        font-weight: 900;
+        border-radius: 8px;
+      }
+
+      .ghost {
+        color: #0f766e;
+        background: #fff;
+        border: 1px solid #bae6fd;
+      }
+
+      .primary {
+        color: #fff;
+        background: #2563eb;
+        border: 1px solid #2563eb;
+      }
+
+      .danger-action {
+        min-height: 34px;
+        padding: 0 10px;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 900;
+        background: #c2410c;
+        border: 1px solid #c2410c;
+        border-radius: 8px;
+      }
+
+      .cloud-history {
+        display: grid;
+        gap: 7px;
+      }
+
+      .cloud-history p {
+        margin: 0;
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .cloud-history button {
+        width: 100%;
+        padding: 8px 10px;
+        overflow: hidden;
+        color: #334155;
+        font-size: 13px;
+        font-weight: 800;
+        text-align: left;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+      }
+
+      .cloud-history button.active {
+        color: #0f766e;
+        background: #f0fdfa;
+        border-color: #5eead4;
+      }
+
+      .inline-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        padding: 10px;
+        background: #fff;
+        border: 1px dashed #cbd5e1;
+        border-radius: 8px;
+      }
+
+      .inline-form input {
+        min-width: 0;
+        height: 34px;
+        padding: 0 10px;
+        color: #17202f;
+        background: #f8fafc;
+        border: 1px solid #dbe5ed;
+        border-radius: 8px;
+      }
+
+      .backup-history {
+        display: grid;
+        gap: 7px;
+      }
+
+      .backup-history p {
+        margin: 0;
+        color: #64748b;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .backup-history button {
+        width: 100%;
+        padding: 8px 10px;
+        overflow: hidden;
+        color: #334155;
+        font-size: 13px;
+        font-weight: 800;
+        text-align: left;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+      }
+
+      .backup-history button.active {
+        color: #0f766e;
+        background: #f0fdfa;
+        border-color: #5eead4;
+      }
+
+      details {
+        padding: 9px 10px;
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+      }
+
+      summary {
+        color: #475569;
+        font-size: 13px;
+        font-weight: 900;
+        cursor: pointer;
+      }
+
+      .advanced-copy {
+        margin: 8px 0 0;
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">↻</div>
+          <h1>AI保顾问</h1>
+        </div>
+        <nav class="nav" aria-label="主导航">
+          <button><span class="nav-icon">▦</span><b>工作日历</b></button>
+          <button class="active"><span class="nav-icon">⌘</span><b>维护</b></button>
+          <button><span class="nav-icon">☏</span><b>支持</b></button>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <div class="panel-page">
+          <div class="page-heading">
+            <span>数据维护</span>
+            <h2>维护</h2>
+          </div>
+
+          <div class="maintenance-page">
+            <div class="maintenance-main">
+              <section class="maintenance-section">
+                <div class="maintenance-head">
+                  <div>
+                    <span>1</span>
+                    <div>
+                      <h3>上传文件</h3>
+                      <p>表头乱时，再打开大模型识别。</p>
+                    </div>
+                  </div>
+                  <strong>先分析</strong>
+                </div>
+                <div class="placeholder-grid">
+                  <div><b>客户生日表</b><span>支持 xlsx / csv</span></div>
+                  <div><b>保单续期表</b><span>导入前自动备份</span></div>
+                  <div><b>家庭保障表</b><span>先记录字段</span></div>
+                </div>
+              </section>
+
+              <section class="maintenance-section">
+                <div class="maintenance-head">
+                  <div>
+                    <span>2</span>
+                    <div>
+                      <h3>处理待确认</h3>
+                      <p>不确定的客户和保单，先让人确认。</p>
+                    </div>
+                  </div>
+                  <strong>0 条</strong>
+                </div>
+                <div class="pending-row">
+                  <b>当前没有待确认</b>
+                  <span>导入后有缺失生日、生效日或缴费期间时，会显示在这里。</span>
+                </div>
+              </section>
+
+              <section class="maintenance-section">
+                <div class="maintenance-head">
+                  <div>
+                    <span>3</span>
+                    <div>
+                      <h3>同步飞书</h3>
+                      <p>页面不执行同步，把链接交给 Agent。</p>
+                    </div>
+                  </div>
+                  <strong>Agent 执行</strong>
+                </div>
+              </section>
+            </div>
+
+            <aside class="maintenance-aside">
+              <section class="backup-panel">
+                <h3>常用维护</h3>
+
+                <div class="backup-actions">
+                  <article class="backup-action-card">
+                    <div>
+                      <b>备份当前数据</b>
+                      <span>导入前会自动备份。</span>
+                    </div>
+                    <button class="ghost">备份</button>
+                  </article>
+
+                  <article class="backup-action-card">
+                    <div>
+                      <b>恢复旧备份</b>
+                      <span>恢复前会再次确认。</span>
+                    </div>
+                    <button class="ghost">恢复</button>
+                  </article>
+
+                  <article class="backup-action-card">
+                    <div>
+                      <b>查看导入记录</b>
+                      <span>2026-06-19 15:20 本机手动备份</span>
+                    </div>
+                    <button class="ghost">查看</button>
+                  </article>
+
+                  <article class="backup-action-card danger">
+                    <div>
+                      <b>清空数据</b>
+                      <span>会先自动备份。</span>
+                    </div>
+                    <button class="danger-action">清空</button>
+                  </article>
+                </div>
+              </section>
+
+              <section class="cloud-panel">
+                <h3>云备份</h3>
+                <p class="cloud-note">额外保存一份加密备份，不影响本机使用。</p>
+
+                <div class="cloud-status">
+                  <div>
+                    <b>坚果云已连接</b>
+                    <span>上次备份：今天 15:20</span>
+                  </div>
+                  <button class="ghost">设置</button>
+                </div>
+
+                <div class="cloud-actions">
+                  <button class="primary">备份到云端</button>
+                  <button class="ghost">从云端恢复</button>
+                </div>
+
+                <div class="cloud-history" aria-label="最近云备份">
+                  <p>最近云备份</p>
+                  <button class="active">2026-06-19 15:20　坚果云备份</button>
+                  <button>2026-06-18 22:11　坚果云备份</button>
+                </div>
+
+                <details>
+                  <summary>高级设置</summary>
+                  <p class="advanced-copy">只同步加密备份文件；恢复前会先备份当前数据。</p>
+                </details>
+              </section>
+
+              <section class="cloud-panel">
+                <h3>未连接状态</h3>
+                <p class="cloud-note">首次使用时只显示连接入口，避免普通用户看到技术配置。</p>
+
+                <div class="cloud-status" style="background:#fffbeb;border-color:#fcd34d;">
+                  <div>
+                    <b>坚果云未连接</b>
+                    <span style="color:#92400e;">连接后可上传加密备份。</span>
+                  </div>
+                  <button class="ghost">连接</button>
+                </div>
+              </section>
+
+              <section class="backup-panel" style="display:none;">
+                <h3>常用维护</h3>
+                <p class="backup-note">保护本机数据，云端只保存加密备份。</p>
+
+                <div class="backup-actions">
+                  <div class="backup-history" aria-label="最近备份">
+                    <p>最近备份</p>
+                    <button class="active">2026-06-19 15:20　本机手动备份</button>
+                    <button>2026-06-18 22:11　坚果云备份</button>
+                    <button>2026-06-17 19:02　导入前备份</button>
+                  </div>
+                </div>
+              </section>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>
