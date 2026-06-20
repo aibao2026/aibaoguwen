@@ -1722,6 +1722,151 @@ function ImportView({
   );
 }
 
+type MaintenanceDialog =
+  | { type: "restore-backup"; fileName: string }
+  | { type: "clear-data"; confirmation: string }
+  | { type: "enable-encryption"; password: string }
+  | { type: "restore-cloud"; fileName: string }
+  | { type: "change-password"; currentPassword: string; nextPassword: string };
+
+function maintenanceDialogTitle(dialog: MaintenanceDialog) {
+  if (dialog.type === "restore-backup") return "恢复旧备份";
+  if (dialog.type === "clear-data") return "清空数据";
+  if (dialog.type === "enable-encryption") return "设置数据密码";
+  if (dialog.type === "restore-cloud") return "从云端恢复";
+  return "修改数据密码";
+}
+
+function maintenanceDialogIntro(dialog: MaintenanceDialog) {
+  if (dialog.type === "restore-backup") return "恢复后会覆盖当前本机数据。";
+  if (dialog.type === "clear-data") return "将清空客户、保单、提醒和待确认，清空前会自动备份。";
+  if (dialog.type === "enable-encryption") return "先给本机数据设置密码，之后才能上传加密备份。";
+  if (dialog.type === "restore-cloud") return "从云端恢复会覆盖当前本机数据。";
+  return "请输入当前数据密码，并设置新的数据密码。";
+}
+
+function maintenanceDialogSubmitLabel(dialog: MaintenanceDialog) {
+  if (dialog.type === "restore-backup") return "确认恢复";
+  if (dialog.type === "clear-data") return "确认清空";
+  if (dialog.type === "enable-encryption") return "设置密码";
+  if (dialog.type === "restore-cloud") return "确认恢复";
+  return "修改密码";
+}
+
+function canSubmitMaintenanceDialog(dialog: MaintenanceDialog) {
+  if (dialog.type === "clear-data") return dialog.confirmation === "清空数据";
+  if (dialog.type === "enable-encryption") return dialog.password.length >= 8;
+  if (dialog.type === "change-password") {
+    return dialog.currentPassword.length > 0 && dialog.nextPassword.length >= 8;
+  }
+  return true;
+}
+
+function MaintenanceActionDialog({
+  dialog,
+  isSubmitting,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  dialog: MaintenanceDialog;
+  isSubmitting: boolean;
+  onChange: (dialog: MaintenanceDialog) => void;
+  onClose: () => void;
+  onSubmit: () => Promise<void>;
+}) {
+  return (
+    <div className="todo-dialog-backdrop" role="presentation" onClick={onClose}>
+      <form
+        className="todo-dialog maintenance-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="maintenance-dialog-title"
+        onClick={(event) => event.stopPropagation()}
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (!canSubmitMaintenanceDialog(dialog) || isSubmitting) return;
+          await onSubmit();
+        }}
+      >
+        <div className="todo-dialog-head">
+          <div>
+            <span className="eyebrow">数据维护</span>
+            <h3 id="maintenance-dialog-title">{maintenanceDialogTitle(dialog)}</h3>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+            ×
+          </button>
+        </div>
+        <p className={dialog.type === "clear-data" ? "maintenance-dialog-warning" : "maintenance-dialog-intro"}>
+          {maintenanceDialogIntro(dialog)}
+        </p>
+        {(dialog.type === "restore-backup" || dialog.type === "restore-cloud") && (
+          <p className="maintenance-dialog-target">{dialog.fileName}</p>
+        )}
+        {dialog.type === "clear-data" && (
+          <label>
+            输入“清空数据”
+            <input
+              value={dialog.confirmation}
+              onChange={(event) => onChange({ ...dialog, confirmation: event.target.value })}
+              autoFocus
+            />
+          </label>
+        )}
+        {dialog.type === "enable-encryption" && (
+          <label>
+            数据密码
+            <input
+              value={dialog.password}
+              onChange={(event) => onChange({ ...dialog, password: event.target.value })}
+              type="password"
+              autoComplete="new-password"
+              placeholder="至少 8 位"
+              autoFocus
+            />
+          </label>
+        )}
+        {dialog.type === "change-password" && (
+          <>
+            <label>
+              当前数据密码
+              <input
+                value={dialog.currentPassword}
+                onChange={(event) => onChange({ ...dialog, currentPassword: event.target.value })}
+                type="password"
+                autoComplete="current-password"
+                autoFocus
+              />
+            </label>
+            <label>
+              新的数据密码
+              <input
+                value={dialog.nextPassword}
+                onChange={(event) => onChange({ ...dialog, nextPassword: event.target.value })}
+                type="password"
+                autoComplete="new-password"
+                placeholder="至少 8 位"
+              />
+            </label>
+          </>
+        )}
+        <div className="todo-dialog-actions">
+          <button className="ghost" type="button" onClick={onClose} disabled={isSubmitting}>
+            取消
+          </button>
+          <button
+            className={dialog.type === "clear-data" ? "primary danger-primary" : "primary"}
+            disabled={isSubmitting || !canSubmitMaintenanceDialog(dialog)}
+          >
+            {isSubmitting ? "处理中" : maintenanceDialogSubmitLabel(dialog)}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function BackupPanel({
   databaseStatus,
   refreshKey,
@@ -1750,6 +1895,7 @@ function BackupPanel({
   const [showBackups, setShowBackups] = useState(false);
   const [showCloudConnect, setShowCloudConnect] = useState(false);
   const [showCloudPasswordHelp, setShowCloudPasswordHelp] = useState(false);
+  const [maintenanceDialog, setMaintenanceDialog] = useState<MaintenanceDialog | null>(null);
   const [cloudBaseUrl, setCloudBaseUrl] = useState(rememberedCloud?.baseUrl || DEFAULT_CLOUD_BACKUP_BASE_URL);
   const [cloudUsername, setCloudUsername] = useState(rememberedCloud?.username || "");
   const [cloudPassword, setCloudPassword] = useState(rememberedCloud?.password || "");
@@ -1796,6 +1942,89 @@ function BackupPanel({
     refreshCloud().catch((error: unknown) => setCloudMessage(String(error)));
   }, [databaseStatus.encrypted, databaseStatus.unlocked]);
 
+  async function submitMaintenanceDialog() {
+    if (!maintenanceDialog) return;
+    if (maintenanceDialog.type === "restore-backup") {
+      setBackupLoading(true);
+      try {
+        await restoreBackup(maintenanceDialog.fileName);
+        setBackupMessage("已恢复");
+        setMaintenanceDialog(null);
+        await refreshBackups();
+        await onRestored();
+      } catch (error) {
+        setBackupMessage(String(error));
+      } finally {
+        setBackupLoading(false);
+      }
+      return;
+    }
+    if (maintenanceDialog.type === "clear-data") {
+      setBackupLoading(true);
+      try {
+        const result = await clearLocalData(maintenanceDialog.confirmation);
+        setBackupMessage(`已清空，已备份：${result.backup.fileName}`);
+        setMaintenanceDialog(null);
+        await refreshBackups();
+        onBackupChanged();
+        await onDataCleared();
+      } catch (error) {
+        setBackupMessage(String(error));
+      } finally {
+        setBackupLoading(false);
+      }
+      return;
+    }
+    if (maintenanceDialog.type === "enable-encryption") {
+      setCloudLoading(true);
+      setCloudMessage("");
+      try {
+        await enableDatabaseEncryption(maintenanceDialog.password);
+        setMaintenanceDialog(null);
+        await onDatabaseStatusChanged();
+        setCloudMessage("数据已保护");
+      } catch (error) {
+        setCloudMessage(String(error));
+      } finally {
+        setCloudLoading(false);
+      }
+      return;
+    }
+    if (maintenanceDialog.type === "restore-cloud") {
+      setCloudLoading(true);
+      setCloudMessage("");
+      try {
+        await restoreCloudBackup(maintenanceDialog.fileName);
+        setCloudMessage("已从云端恢复");
+        setMaintenanceDialog(null);
+        await refreshBackups();
+        await onRestored();
+      } catch (error) {
+        setCloudMessage(cloudConnectErrorMessage(error));
+      } finally {
+        setCloudLoading(false);
+      }
+      return;
+    }
+    setCloudLoading(true);
+    setCloudMessage("");
+    try {
+      await changeDatabasePassword(maintenanceDialog.currentPassword, maintenanceDialog.nextPassword);
+      setMaintenanceDialog(null);
+      await onDatabaseStatusChanged();
+      setCloudMessage("数据密码已修改");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCloudMessage(
+        message.includes("database_current_password_invalid") || message.includes("database_password_invalid")
+          ? "当前数据密码不正确，未修改"
+          : "数据密码修改失败",
+      );
+    } finally {
+      setCloudLoading(false);
+    }
+  }
+
   return (
     <>
       <section className="backup-panel">
@@ -1832,18 +2061,10 @@ function BackupPanel({
             <button
               className="ghost"
               disabled={backupLoading || backups.length === 0}
-              onClick={async () => {
+              onClick={() => {
                 const backupToRestore = selectedBackup || backups[0]?.fileName;
-                if (!backupToRestore || !window.confirm("恢复后会覆盖当前数据，继续？")) return;
-                setBackupLoading(true);
-                try {
-                  await restoreBackup(backupToRestore);
-                  setBackupMessage("已恢复");
-                  await refreshBackups();
-                  await onRestored();
-                } finally {
-                  setBackupLoading(false);
-                }
+                if (!backupToRestore) return;
+                setMaintenanceDialog({ type: "restore-backup", fileName: backupToRestore });
               }}
             >
               恢复
@@ -1873,26 +2094,7 @@ function BackupPanel({
             <button
               className="danger-action"
               disabled={backupLoading}
-              onClick={async () => {
-                if (!window.confirm("将清空客户、保单、提醒和待确认。清空前会自动备份，继续？")) {
-                  return;
-                }
-                const confirmation = window.prompt("二次确认：请输入“清空数据”");
-                if (confirmation !== "清空数据") {
-                  setBackupMessage("已取消清空");
-                  return;
-                }
-                setBackupLoading(true);
-                try {
-                  const result = await clearLocalData(confirmation);
-                  setBackupMessage(`已清空，已备份：${result.backup.fileName}`);
-                  await refreshBackups();
-                  onBackupChanged();
-                  await onDataCleared();
-                } finally {
-                  setBackupLoading(false);
-                }
-              }}
+              onClick={() => setMaintenanceDialog({ type: "clear-data", confirmation: "" })}
             >
               清空
             </button>
@@ -1926,25 +2128,14 @@ function BackupPanel({
           <article className="backup-action-card status-warn">
             <div>
               <b>先保护数据</b>
-              <span>启用后才能备份到云端。</span>
+              <span>先设置数据密码，再备份到云端。</span>
             </div>
             <button
               className="ghost"
-              onClick={async () => {
-                const password = window.prompt("设置数据密码，至少 8 位");
-                if (!password) return;
-                setCloudLoading(true);
-                try {
-                  await enableDatabaseEncryption(password);
-                  await onDatabaseStatusChanged();
-                  setCloudMessage("数据已保护");
-                } finally {
-                  setCloudLoading(false);
-                }
-              }}
+              onClick={() => setMaintenanceDialog({ type: "enable-encryption", password: "" })}
               disabled={cloudLoading}
             >
-              启用
+              设置密码
             </button>
           </article>
         ) : (
@@ -2076,20 +2267,9 @@ function BackupPanel({
               <button
                 className="ghost"
                 disabled={cloudLoading || !selectedCloudBackup}
-                onClick={async () => {
-                  if (!selectedCloudBackup || !window.confirm("从云端恢复会覆盖当前数据，继续？")) {
-                    return;
-                  }
-                  setCloudLoading(true);
-                  setCloudMessage("");
-                  try {
-                    await restoreCloudBackup(selectedCloudBackup);
-                    setCloudMessage("已从云端恢复");
-                    await refreshBackups();
-                    await onRestored();
-                  } finally {
-                    setCloudLoading(false);
-                  }
+                onClick={() => {
+                  if (!selectedCloudBackup) return;
+                  setMaintenanceDialog({ type: "restore-cloud", fileName: selectedCloudBackup });
                 }}
               >
                 从云端恢复
@@ -2115,26 +2295,7 @@ function BackupPanel({
               <button
                 className="ghost"
                 type="button"
-                onClick={async () => {
-                  const currentPassword = window.prompt("输入当前数据密码");
-                  if (!currentPassword) return;
-                  const nextPassword = window.prompt("输入新的数据密码，至少 8 位");
-                  if (!nextPassword) return;
-                  setCloudMessage("");
-                  try {
-                    await changeDatabasePassword(currentPassword, nextPassword);
-                    await onDatabaseStatusChanged();
-                    setCloudMessage("数据密码已修改");
-                  } catch (error) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    setCloudMessage(
-                      message.includes("database_current_password_invalid") ||
-                        message.includes("database_password_invalid")
-                        ? "当前数据密码不正确，未修改"
-                        : "数据密码修改失败",
-                    );
-                  }
-                }}
+                onClick={() => setMaintenanceDialog({ type: "change-password", currentPassword: "", nextPassword: "" })}
               >
                 修改数据密码
               </button>
@@ -2177,6 +2338,17 @@ function BackupPanel({
             </p>
           </section>
         </div>
+      )}
+      {maintenanceDialog && (
+        <MaintenanceActionDialog
+          dialog={maintenanceDialog}
+          isSubmitting={backupLoading || cloudLoading}
+          onChange={setMaintenanceDialog}
+          onClose={() => {
+            if (!backupLoading && !cloudLoading) setMaintenanceDialog(null);
+          }}
+          onSubmit={submitMaintenanceDialog}
+        />
       )}
     </>
   );

@@ -2655,6 +2655,60 @@ select {
   width: min(520px, 100%);
 }
 
+.maintenance-dialog {
+  width: min(520px, 100%);
+}
+
+.maintenance-dialog label {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.maintenance-dialog input {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  color: #17202f;
+  background: #f8fafc;
+  border: 1px solid #dbe5ed;
+  border-radius: 8px;
+}
+
+.maintenance-dialog-intro,
+.maintenance-dialog-warning,
+.maintenance-dialog-target {
+  padding: 10px 12px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1.45;
+  border-radius: 8px;
+}
+
+.maintenance-dialog-intro {
+  color: #17202f;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+}
+
+.maintenance-dialog-warning {
+  color: #9a3412;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+}
+
+.maintenance-dialog-target {
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
 .cloud-password-intro {
   padding: 12px;
   margin: 0 0 12px;

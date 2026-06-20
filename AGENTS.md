@@ -69,6 +69,16 @@
 - 处理隐私相关改动时，检查数据库、API、UI、飞书同步、多维表格字段、日历描述和测试。
 - 任何新增外部读取、写入或同步能力，都必须先定义数据权限、脱敏输出和用户可理解的授权边界。
 
+## GitHub 开源发布硬规则
+
+- 凡是准备进入公开 GitHub 的开源发布、公开 PR 或公开分支，不得直接从私有开发区 `/Users/mac/Documents/小程序/客户提醒` 提交和推送。
+- 必须先运行白名单导出：`npm run export:open-source -- --clean`，把可公开内容导出到公开发布区 `/Users/mac/Documents/开源/AI保顾问`。
+- 必须在公开发布区重新执行验证：`npm install`、`npm run typecheck`、`npm test`、`npm run build`、`npm audit --omit=dev`，并做敏感内容扫描。
+- 敏感扫描至少确认没有 `data/`、`data/backups/`、`.omx/`、`示范文件/`、SQLite、真实 Excel/PDF、真实飞书链接、Base token、坚果云账号或应用密码、session cookie、客户截图、私人二维码或内部品牌素材。
+- 验证后要清理公开发布区的本地产物：`node_modules`、`dist`、`.omx`，再检查 `git status -sb`。
+- 只有公开发布区验证和扫描通过后，才可以从公开发布区提交、推送 GitHub 或创建 PR。
+- 如果只是临时私有备份分支，必须明确说明“未走开源发布流程”，不得称为“已开源发布”。
+
 ## 前端修改要求
 
 - 先看当前页面结构和现有 CSS，不要直接堆新卡片。
