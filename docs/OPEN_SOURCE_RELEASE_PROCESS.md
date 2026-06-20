@@ -2,6 +2,8 @@
 
 本项目的日常开发目录可能包含本地 SQLite、备份、真实 Excel/PDF、飞书验收信息和本地自动化日志。开源发布不要直接从日常开发目录推送，也不要压缩整个项目文件夹分享。
 
+硬规则：凡是准备进入公开 GitHub 的开源发布、公开 PR 或公开分支，必须先导出到公开发布区，在公开发布区完成脱敏扫描、安装、测试、构建和清理，然后只从公开发布区提交和推送。未走完这套流程的分支只能算开发备份或内部验证，不能称为已完成开源发布。
+
 推荐使用两套目录：
 
 ```text
@@ -18,6 +20,8 @@
 - 导出脚本不会复制 `data/`、`data/backups/`、`.omx/`、`node_modules/`、`示范文件/`、`docs/brand/`、真实 Excel/PDF、SQLite 数据库或本地构建产物。
 - 默认只导出已经确认可公开的图片资产。`src/web/public/support/community-qr.png` 是公开宣传和社群入口二维码，可以保留；私人二维码、内部品牌素材、客户截图或聊天截图仍然不得发布。
 - 每次发布前都在公开发布区重新安装、测试和构建。
+- 每次发布前都要在公开发布区做敏感内容扫描和文件清单检查。
+- 验证完成后必须删除 `node_modules`、`dist`、`.omx` 等本地产物，再检查 Git 状态。
 
 ## 导出命令
 
@@ -71,6 +75,7 @@ git ls-files
 
 ```bash
 rm -rf node_modules dist .omx
+git status -sb
 ```
 
 如果要确认敏感目录没有被纳入：
@@ -120,4 +125,5 @@ rg -n "密码|password|token|cookie|session|Base token|customer-reminders.sqlite
 2. 运行 `npm run export:open-source -- --clean` 导出公开发布区。
 3. 在公开发布区运行安装、测试、构建和安全检查。
 4. 人工检查 README、SECURITY、OPEN_SOURCE_ALPHA、data-security-and-cloud-backup 和示例数据说明。
-5. 确认公开发布区没有敏感数据后，再从公开发布区提交和推送 GitHub。
+5. 删除 `node_modules`、`dist`、`.omx` 等验证产物，并确认公开发布区 Git 状态只包含预期改动。
+6. 确认公开发布区没有敏感数据后，再从公开发布区提交和推送 GitHub。
